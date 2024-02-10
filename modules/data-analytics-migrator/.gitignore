@@ -120,6 +120,9 @@ venv.bak/
 # mkdocs documentation
 /site
 
+# wheelhouse
+/wheelhouse
+
 # mypy
 .mypy_cache/
 .dmypy.json

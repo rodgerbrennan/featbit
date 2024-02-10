@@ -1,9 +1,5 @@
 FROM python:3.9-slim-buster
 ARG KAFKA_HOSTS=kafka:9092
-ARG KAFKA_SECURITY_PROTOCOL=PLAINTEXT
-ARG KAFKA_SASL_MECHANISM=
-ARG KAFKA_SASL_USER=
-ARG KAFKA_SASL_PASSWORD=
 ARG CLICKHOUSE_HOST=clickhouse-server
 ARG CLICKHOUSE_ALT_HOST=
 ARG CLICKHOUSE_PORT=9000
@@ -18,17 +14,6 @@ ARG CLICKHOUSE_SECURE=false
 ARG CLICKHOUSE_VERIFY=true
 ARG TEST=false
 ARG SUFFIX=
-ARG CACHE_TYPE=RedisCache
-ARG REDIS_USER=
-ARG REDIS_PASSWORD=
-ARG REDIS_DB=0
-ARG REDIS_SSL=false
-ARG REDIS_HOST=localhost
-ARG REDIS_PORT=6379
-ARG REDIS_CLUSTER_HOST_PORT_PAIRS=localhost:6379
-ARG REDIS_SENTINEL_HOST_PORT_PAIRS=localhost:26379
-ARG REDIS_SENTINEL_PASSWORD=
-ARG REDIS_SENTINEL_MASTER_SET=mymaster
 ARG MONGO_HOST=mongodb
 ARG MONGO_PORT=27017
 ARG MONGO_URI=mongodb://admin:password@mongodb:27017
@@ -36,10 +21,6 @@ ARG MONGO_INITDB_DATABASE=featbit
 ARG IS_PRO=false
 ARG CHECK_DB_LIVNESS=true
 ENV KAFKA_HOSTS=${KAFKA_HOSTS} \
-    KAFKA_SECURITY_PROTOCOL=${KAFKA_SECURITY_PROTOCOL} \
-    KAFKA_SASL_MECHANISM=${KAFKA_SASL_MECHANISM} \
-    KAFKA_SASL_USER=${KAFKA_SASL_USER} \
-    KAFKA_SASL_PASSWORD=${KAFKA_SASL_PASSWORD} \
     CLICKHOUSE_USER=${CLICKHOUSE_USER} \
     CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD} \
     CLICKHOUSE_HOST=${CLICKHOUSE_HOST} \
@@ -53,16 +34,6 @@ ENV KAFKA_HOSTS=${KAFKA_HOSTS} \
     CLICKHOUSE_SECURE=${CLICKHOUSE_SECURE} \
     CLICKHOUSE_VERIFY=${CLICKHOUSE_VERIFY} \
     CACHE_TYPE=${CACHE_TYPE} \
-    REDIS_USER=${REDIS_USER} \
-    REDIS_PASSWORD=${REDIS_PASSWORD} \
-    REDIS_DB=${REDIS_DB} \
-    REDIS_SSL=${REDIS_SSL} \
-    REDIS_HOST=${REDIS_HOST} \
-    REDIS_PORT=${REDIS_PORT} \
-    REDIS_CLUSTER_HOST_PORT_PAIRS=${REDIS_CLUSTER_HOST_PORT_PAIRS} \
-    REDIS_SENTINEL_HOST_PORT_PAIRS=${REDIS_SENTINEL_HOST_PORT_PAIRS} \
-    REDIS_SENTINEL_PASSWORD=${REDIS_SENTINEL_PASSWORD} \
-    REDIS_SENTINEL_MASTER_SET=${REDIS_SENTINEL_MASTER_SET} \
     TEST=${TEST} \
     SUFFIX=${SUFFIX} \
     MONGO_HOST=${MONGO_HOST} \
@@ -71,16 +42,14 @@ ENV KAFKA_HOSTS=${KAFKA_HOSTS} \
     MONGO_DB=${MONGO_INITDB_DATABASE} \
     IS_PRO=${IS_PRO} \
     CHECK_DB_LIVNESS=${CHECK_DB_LIVNESS}
-RUN apt update && apt install -y nginx && apt install -y supervisor && apt install -y git
-RUN mkdir -p /var/log/nginx && \
-    touch /var/log/nginx/access.log && \
-    touch /var/log/nginx/error.log
-EXPOSE 80
-COPY nginx.conf /etc/nginx/nginx.conf
-COPY . /featbit_da
+RUN apt update && apt install -y git    
+COPY dist/ /featbit_da
+COPY wait-for-it.sh /featbit_da
+COPY docker-entrypoint.sh /featbit_da
+COPY wheelhouse/ /featbit_da/wheelhouse
+
 WORKDIR /featbit_da
-RUN chmod +x start.sh docker-entrypoint.sh wait-for-it.sh
-RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
-RUN opentelemetry-bootstrap -a install
-ENTRYPOINT ["./docker-entrypoint.sh"]
-CMD ["/usr/bin/supervisord","-c","supervisord.conf"]
+RUN chmod +x docker-entrypoint.sh wait-for-it.sh
+RUN pip install --no-index --no-deps wheelhouse/*.whl
+RUN pip install --upgrade pip && pip install --no-cache-dir data_analytics_migrator-0.0.1-py3-none-any.whl
+# ENTRYPOINT ["./docker-entrypoint.sh"]

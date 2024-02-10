@@ -1,0 +1,42 @@
+[tool.poetry]
+name = "data-analytics-migrator"
+authors = ["Rodger Brennan"]
+version = "0.0.1"
+readme = "README.md"
+description = "Migrator for Featbit Data Analyitics Databases"
+packages = [{include = "app"}]
+
+[tool.poetry.dependencies]
+python = "3.9.17"
+certifi = "^2024.2.2"
+urllib3 = "^1.22.0"
+python-dateutil = "^2.8.2"
+clickhouse-pool = "^0.5.3"
+clickhouse-driver = "^0.2.6"
+kafka-python = "^2.0.2"
+sqlparse = "^0.3.0"
+python-dotenv = "^1.0.1"
+infi-clickhouse-orm = {git = "https://github.com/featbit/infi.clickhouse_orm", rev="ce2a0f2" }
+click = "^8.1.7"
+pymongo = "^4.6.1"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^7.2.2"
+
+[tool.poetry.scripts]
+migrate-database = "app.cli:migratedatabase"
+
+[[tool.poetry.source]]
+name = "github"
+url = "https://github.com"
+priority = "primary"
+
+
+[[tool.poetry.source]]
+name = "PyPI"
+priority = "primary"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+

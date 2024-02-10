@@ -132,3 +132,6 @@ dmypy.json
 .pyre/
 
 scheduler.lock
+
+# vscode
+.vscode

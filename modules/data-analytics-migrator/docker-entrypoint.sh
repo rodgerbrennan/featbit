@@ -12,5 +12,6 @@ if [ "$CHECK_DB_LIVNESS" = true ]; then
 fi
 
 # Run the main container command.
-poetry run migrate-database
+# poetry run migrate-database
+python  -m app.cli
 # exec "$@"

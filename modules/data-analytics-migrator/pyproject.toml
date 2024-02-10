@@ -9,11 +9,9 @@ packages = [{include = "app"}]
 [tool.poetry.dependencies]
 python = "3.9.17"
 certifi = "^2024.2.2"
-urllib3 = "^1.22.0"
 python-dateutil = "^2.8.2"
 clickhouse-pool = "^0.5.3"
 clickhouse-driver = "^0.2.6"
-kafka-python = "^2.0.2"
 sqlparse = "^0.3.0"
 python-dotenv = "^1.0.1"
 infi-clickhouse-orm = {git = "https://github.com/featbit/infi.clickhouse_orm", rev="ce2a0f2" }

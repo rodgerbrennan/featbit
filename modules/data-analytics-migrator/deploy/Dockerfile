@@ -1,3 +1,27 @@
+FROM python:3.9-slim-buster as build
+WORKDIR /source
+
+RUN apt update && apt install -y git
+
+RUN pip install poetry==1.7.1
+
+COPY setup.py ./
+COPY pyproject.toml poetry.lock ./
+RUN touch README.md
+
+COPY app ./app
+
+RUN poetry install
+RUN poetry build
+
+RUN poetry export -f requirements.txt -o requirements.txt --without-hashes
+
+RUN pip wheel -w wheelhouse -r requirements.txt
+
+RUN rm pyproject.toml && rm poetry.lock
+
+RUN sed -i 's/ @ git+https:\/\/github.com\/featbit\/infi.clickhouse_orm@ce2a0f249f691eaf2c7841c496987f4e7433d509//' requirements.txt
+
 FROM python:3.9-slim-buster
 
 ARG KAFKA_HOSTS=kafka:9092
@@ -44,20 +68,17 @@ ENV KAFKA_HOSTS=${KAFKA_HOSTS} \
     IS_PRO=${IS_PRO} \
     CHECK_DB_LIVNESS=${CHECK_DB_LIVNESS}
 
-
 WORKDIR /featbit_da
-COPY wheelhouse ./wheelhouse
-
-COPY wait-for-it.sh /featbit_da
-COPY docker-entrypoint.sh /featbit_da
-COPY requirements.txt /featbit_da
-COPY setup.py /featbit_da
-COPY app ./app
-RUN touch README.md
+COPY --from=build /source ./
 
 RUN pip install --no-index --no-deps wheelhouse/*.whl
 RUN pip install --editable .
 RUN rm -rf wheelhouse
+
+COPY wait-for-it.sh /featbit_da
+COPY docker-entrypoint.sh /featbit_da
+COPY setup.py /featbit_da
+
 RUN chmod +x docker-entrypoint.sh wait-for-it.sh
 
 ENTRYPOINT ["./docker-entrypoint.sh"]

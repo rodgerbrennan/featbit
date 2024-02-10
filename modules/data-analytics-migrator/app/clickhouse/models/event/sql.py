@@ -109,10 +109,3 @@ DISTRIBUTED_EVENTS_TABLE_SQL = EVENTS_TABLE_BASIC_SQL.format(
     extra_fields=KAFKA_COLUMNS
 )
 
-
-
-# print(EVENTS_TABLE_SQL)
-# print(KAFKA_EVENTS_SQL)
-# print(EVENTS_TABLE_MV_SQL)
-
-MERGE_EVENTS_SQL = f"OPTIMIZE TABLE {_internal_event_table_name()} {cluster()} FINAL"

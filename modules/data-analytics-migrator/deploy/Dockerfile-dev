@@ -1,5 +1,9 @@
 FROM python:3.9-slim-buster
 
+RUN apt update && apt install -y git
+
+RUN pip install poetry==1.7.1
+
 ARG KAFKA_HOSTS=kafka:9092
 ARG CLICKHOUSE_HOST=clickhouse-server
 ARG CLICKHOUSE_ALT_HOST=
@@ -44,20 +48,31 @@ ENV KAFKA_HOSTS=${KAFKA_HOSTS} \
     IS_PRO=${IS_PRO} \
     CHECK_DB_LIVNESS=${CHECK_DB_LIVNESS}
 
+ENV POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_IN_PROJECT=1 \
+    POETRY_VIRTUALENVS_CREATE=1 \
+    POETRY_CACHE_DIR=/tmp/poetry_cache
 
 WORKDIR /featbit_da
-COPY wheelhouse ./wheelhouse
+
+
+COPY pyproject.toml poetry.lock ./
+COPY app ./app
+
 
 COPY wait-for-it.sh /featbit_da
 COPY docker-entrypoint.sh /featbit_da
-COPY requirements.txt /featbit_da
 COPY setup.py /featbit_da
+
 COPY app ./app
+
 RUN touch README.md
 
-RUN pip install --no-index --no-deps wheelhouse/*.whl
+RUN poetry install && rm -rf $POETRY_CACHE_DIR
+
+# RUN pip install --no-index --no-deps wheelhouse/*.whl
 RUN pip install --editable .
-RUN rm -rf wheelhouse
+# RUN rm -rf wheelhouse
 RUN chmod +x docker-entrypoint.sh wait-for-it.sh
 
 ENTRYPOINT ["./docker-entrypoint.sh"]

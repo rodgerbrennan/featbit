@@ -13,5 +13,6 @@ fi
 
 # Run the main container command.
 # poetry run migrate-database
-python  -m app.cli
+# python  -m app.cli
+migrate-database
 # exec "$@"

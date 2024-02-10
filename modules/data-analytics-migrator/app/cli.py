@@ -77,7 +77,7 @@ def migratedatabase(ctx, upto, check, plan, print_sql):
         migrate_mongo()
 
 def configure_logger():
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
+    logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s')
 
 configure_logger()
 

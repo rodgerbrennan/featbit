@@ -42,14 +42,26 @@ ENV KAFKA_HOSTS=${KAFKA_HOSTS} \
     MONGO_DB=${MONGO_INITDB_DATABASE} \
     IS_PRO=${IS_PRO} \
     CHECK_DB_LIVNESS=${CHECK_DB_LIVNESS}
-RUN apt update && apt install -y git    
+RUN apt update && apt install -y git
+
+RUN pip install poetry==1.4.2
+
+ENV POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_IN_PROJECT=1 \
+    POETRY_VIRTUALENVS_CREATE=1 \
+    POETRY_CACHE_DIR=/tmp/poetry_cache
+
 COPY dist/ /featbit_da
 COPY wait-for-it.sh /featbit_da
 COPY docker-entrypoint.sh /featbit_da
 COPY wheelhouse/ /featbit_da/wheelhouse
 
 WORKDIR /featbit_da
+COPY pyproject.toml poetry.lock ./
+COPY app ./app
+RUN touch README.md
+RUN poetry install --without dev && rm -rf $POETRY_CACHE_DIR
 RUN chmod +x docker-entrypoint.sh wait-for-it.sh
 RUN pip install --no-index --no-deps wheelhouse/*.whl
 RUN pip install --upgrade pip && pip install --no-cache-dir data_analytics_migrator-0.0.1-py3-none-any.whl
-# ENTRYPOINT ["./docker-entrypoint.sh"]
+ENTRYPOINT ["./docker-entrypoint.sh"]

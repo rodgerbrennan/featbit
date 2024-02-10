@@ -12,5 +12,5 @@ if [ "$CHECK_DB_LIVNESS" = true ]; then
 fi
 
 # Run the main container command.
-data-analytics-server migrate-database
+poetry run migrate-database
 # exec "$@"

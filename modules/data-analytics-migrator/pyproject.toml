@@ -26,15 +26,15 @@ pytest = "^7.2.2"
 [tool.poetry.scripts]
 migrate-database = "app.cli:migratedatabase"
 
-[[tool.poetry.source]]
-name = "github"
-url = "https://github.com"
-priority = "primary"
+# [[tool.poetry.source]]
+# name = "github"
+# url = "https://github.com"
+# priority = "primary"
 
 
-[[tool.poetry.source]]
-name = "PyPI"
-priority = "primary"
+# [[tool.poetry.source]]
+# name = "PyPI"
+# priority = "primary"
 
 [build-system]
 requires = ["poetry-core"]

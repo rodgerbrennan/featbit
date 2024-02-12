@@ -7,7 +7,7 @@ import numpy as np
 from scipy.stats import t as t_test
 from statsmodels.stats.power import tt_ind_solve_power
 
-from utils import format_float_positional, to_UTC_datetime
+from app.utils import format_float_positional, to_UTC_datetime
 
 EXPT_NECESSARY_COLUMNS = ["exptId", "envId", "flagExptId", "eventName", "eventType", "startExptTime", "baselineVariationId", "variationIds"]
 EXPT_EVENT_TYPE_MAPPING = {1: "CustomEvent", 2: "PageView", 3: "Click"}

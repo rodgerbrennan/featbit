@@ -2,10 +2,10 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from app.clickhouse.client import sync_execute
-from app.main.models.statistics.end_user.sql import (
+from app.mainapp.models.statistics.end_user.sql import (
     count_and_list_user_from_mongodb, count_user_sql, get_users_sql)
-from app.setting import DATE_ISO_FMT, DATE_UTC_FMT, IS_PRO
-from utils import to_UTC_datetime
+from app.setting import settings
+from app.utils import to_UTC_datetime
 
 END_USER_PARAMS_NECESSARY_COLUMNS = ['flagExptId', 'envId', 'startTime']
 
@@ -76,9 +76,9 @@ class EndUserParams:
 
 class EndUserStatistics:
     def __init__(self, params: "EndUserParams"):
-        if IS_PRO:
-            start = params.start.strftime(DATE_ISO_FMT)
-            end = params.end.strftime(DATE_ISO_FMT)
+        if settings.IS_PRO:
+            start = params.start.strftime(settings.DATE_ISO_FMT)
+            end = params.end.strftime(settings.DATE_ISO_FMT)
         else:
             start = params.start
             end = params.end
@@ -100,14 +100,14 @@ class EndUserStatistics:
         has_variation = 'variation' in self._query_params
         has_user = 'user_search_key' in self._query_params
 
-        if IS_PRO:
+        if settings.IS_PRO:
             for res in sync_execute(count_user_sql(has_variation, has_user), args=self._query_params):  # type: ignore
                 user_count = res[0]
             rs = sync_execute(get_users_sql(has_variation, has_user), args=self._query_params)
         else:
             user_count, rs = count_and_list_user_from_mongodb(self._query_params, has_variation=has_variation, has_user=has_user)
 
-        items = [{"variationId": var_key, "keyId": user_key, "name": user_name, "lastEvaluatedAt": time.strftime(DATE_UTC_FMT)}
+        items = [{"variationId": var_key, "keyId": user_key, "name": user_name, "lastEvaluatedAt": time.strftime(settings.DATE_UTC_FMT)}
                  for var_key, user_key, user_name, time in rs]  # type: ignore
         return {"totalCount": user_count,  # type: ignore
                 "items": items}

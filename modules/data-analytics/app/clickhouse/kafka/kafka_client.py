@@ -3,11 +3,8 @@ from enum import Enum
 from typing import Any, Callable, Dict, Iterable, Optional, Union
 
 from app.clickhouse.client import sync_execute
-from app.setting import (KAFKA_HOSTS, KAFKA_PRODUCER_ENABLED,
-                         KAFKA_PRODUCER_RETRIES, KAFKA_SASL_MECHANISM,
-                         KAFKA_SASL_PASSWORD, KAFKA_SASL_USER,
-                         KAFKA_SECURITY_PROTOCOL)
-from utils import SingletonDecorator
+from app.setting import Settings
+from app.utils import SingletonDecorator
 
 from kafka import KafkaProducer as KP
 
@@ -20,11 +17,11 @@ class _KafkaSecurityProtocol(str, Enum):
 
 
 def _sasl_params():
-    if KAFKA_SECURITY_PROTOCOL in [_KafkaSecurityProtocol.SASL_PLAINTEXT, _KafkaSecurityProtocol.SASL_SSL]:
+    if Settings.KAFKA_SECURITY_PROTOCOL in [_KafkaSecurityProtocol.SASL_PLAINTEXT, _KafkaSecurityProtocol.SASL_SSL]:
         return {
-            "sasl_mechanism": KAFKA_SASL_MECHANISM,
-            "sasl_plain_username": KAFKA_SASL_USER,
-            "sasl_plain_password": KAFKA_SASL_PASSWORD,
+            "sasl_mechanism": Settings.KAFKA_SASL_MECHANISM,
+            "sasl_plain_username": Settings.KAFKA_SASL_USER,
+            "sasl_plain_password": Settings.KAFKA_SASL_PASSWORD,
         }
     return {}
 
@@ -32,9 +29,9 @@ def _sasl_params():
 class _KafkaProducer:
     def __init__(self):
         self.producer = KP(
-            retries=KAFKA_PRODUCER_RETRIES,
-            bootstrap_servers=KAFKA_HOSTS,
-            security_protocol=KAFKA_SECURITY_PROTOCOL or _KafkaSecurityProtocol.PLAINTEXT,
+            retries=Settings.KAFKA_PRODUCER_RETRIES,
+            bootstrap_servers=Settings.KAFKA_HOSTS,
+            security_protocol=Settings.KAFKA_SECURITY_PROTOCOL or _KafkaSecurityProtocol.PLAINTEXT,
             **_sasl_params())
 
     @staticmethod
@@ -60,7 +57,7 @@ KafkaProducer = SingletonDecorator(_KafkaProducer)
 class ClickhouseProducer:
 
     def __init__(self):
-        self.producer = KafkaProducer() if KAFKA_PRODUCER_ENABLED else None
+        self.producer = KafkaProducer() if Settings.KAFKA_PRODUCER_ENABLED else None
 
     def produce(self,
                 sql: str,

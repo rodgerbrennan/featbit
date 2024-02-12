@@ -3,12 +3,12 @@ from itertools import groupby
 from typing import Any, Dict, Iterable, Optional
 
 from app.clickhouse.client import sync_execute
-from app.main.models.statistics.feature_flag.sql import (
+from app.mainapp.models.statistics.feature_flag.sql import (
     GET_FLAG_EVENTS_BY_INTERVAL_SQL, make_statistic_ff_events_from_mongod)
-from app.main.models.statistics.time_series import (FrequencyType,
+from app.mainapp.models.statistics.time_series.util import (FrequencyType,
                                                     generate_time_series)
-from app.setting import DATE_ISO_FMT, DATE_UTC_FMT, IS_PRO
-from utils import time_to_special_tz, to_UTC_datetime
+from app.setting import settings
+from app.utils import time_to_special_tz, to_UTC_datetime
 
 INTERVAL_PARAMS_NECESSARY_COLUMNS = ['flagExptId', 'envId', 'startTime', 'intervalType']
 
@@ -65,10 +65,10 @@ class IntervalParams:
 
 class FeatureFlagIntervalStatistics:
     def __init__(self, params: "IntervalParams"):
-        if IS_PRO:
+        if settings.IS_PRO:
             interval_type = params.interval.value
-            start = params.start.strftime(DATE_ISO_FMT)
-            end = params.end.strftime(DATE_ISO_FMT)
+            start = params.start.strftime(settings.DATE_ISO_FMT)
+            end = params.end.strftime(settings.DATE_ISO_FMT)
         else:
             interval_type = params.interval
             start = params.start
@@ -90,15 +90,15 @@ class FeatureFlagIntervalStatistics:
 
         def iter(groups):
             for ts in generate_time_series(self._params.start, self._params.end, self._params.timezone, self._params.interval):
-                ts_str = handle_time(ts).strftime(DATE_UTC_FMT)
+                ts_str = handle_time(ts).strftime(settings.DATE_UTC_FMT)
                 counts = groups.get(ts_str, [])
                 yield {"time": ts_str, "variations": counts}
 
-        if IS_PRO:
+        if settings.IS_PRO:
             rs = sync_execute(GET_FLAG_EVENTS_BY_INTERVAL_SQL, args=self._query_params)
         else:
             rs = make_statistic_ff_events_from_mongod(self._query_params)
-        counts_gen = ({"time": handle_time(time).strftime(DATE_UTC_FMT), "id": var_key, "val": count}
+        counts_gen = ({"time": handle_time(time).strftime(settings.DATE_UTC_FMT), "id": var_key, "val": count}
                       for count, var_key, time in rs)  # type: ignore
         counts_by_group = dict((time, list(group)) for time, group in groupby(sorted(counts_gen, key=lambda x: x["time"]), key=lambda x: x.pop("time")))
         return list(iter(counts_by_group))

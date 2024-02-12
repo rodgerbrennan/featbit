@@ -1,5 +1,5 @@
 
-from app.setting import CLICKHOUSE_KAFKA_HOSTS
+from app.setting import settings
 
 KAFKA_ENGINE = """
 Kafka SETTINGS kafka_broker_list = '{kafka_host}',
@@ -25,7 +25,7 @@ def kafka_engine(
     skip_broken_messages=100
 ):
     if kafka_host is None:
-        kafka_host = CLICKHOUSE_KAFKA_HOSTS
+        kafka_host = settings.CLICKHOUSE_KAFKA_HOSTS
     return KAFKA_ENGINE.format(topic=topic,
                                kafka_host=kafka_host,
                                group=group,

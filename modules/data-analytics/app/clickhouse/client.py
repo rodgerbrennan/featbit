@@ -6,14 +6,16 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import sqlparse
 from clickhouse_driver import Client as SyncClient
 from clickhouse_pool import ChPool
-from flask import current_app
+# from flask import current_app
 
-from app.setting import (CLICKHOUSE_ALT_HOST, CLICKHOUSE_CA,
-                         CLICKHOUSE_CONN_POOL_MAX, CLICKHOUSE_CONN_POOL_MIN,
-                         CLICKHOUSE_DATABASE, CLICKHOUSE_HOST,
-                         CLICKHOUSE_PASSWORD, CLICKHOUSE_PORT,
-                         CLICKHOUSE_SECURE, CLICKHOUSE_USER, CLICKHOUSE_VERIFY,
-                         SHELL_PLUS_PRINT_SQL, TEST)
+# from app.setting import (CLICKHOUSE_ALT_HOST, CLICKHOUSE_CA,
+#                          CLICKHOUSE_CONN_POOL_MAX, CLICKHOUSE_CONN_POOL_MIN,
+#                          CLICKHOUSE_DATABASE, CLICKHOUSE_HOST,
+#                          CLICKHOUSE_PASSWORD, CLICKHOUSE_PORT,
+#                          CLICKHOUSE_SECURE, CLICKHOUSE_USER, CLICKHOUSE_VERIFY,
+#                          SHELL_PLUS_PRINT_SQL, TEST)
+
+from app.setting import settings
 
 InsertParams = Union[List, Tuple, types.GeneratorType]
 NonInsertParams = Dict[str, Any]
@@ -24,20 +26,20 @@ __ch_pool = None
 
 def _settings():
     kwargs = {
-        "host": CLICKHOUSE_HOST,
-        "port": CLICKHOUSE_PORT,
-        "database": CLICKHOUSE_DATABASE,
-        "secure": CLICKHOUSE_SECURE,
-        "user": CLICKHOUSE_USER,
-        "password": CLICKHOUSE_PASSWORD,
-        "ca_certs": CLICKHOUSE_CA,
-        "verify": CLICKHOUSE_VERIFY,
-        "connections_min": CLICKHOUSE_CONN_POOL_MIN,
-        "connections_max": CLICKHOUSE_CONN_POOL_MAX,
-        "settings": {"mutations_sync": "1"} if TEST else {},
+        "host": settings.CLICKHOUSE_HOST,
+        "port": settings.CLICKHOUSE_PORT,
+        "database": settings.CLICKHOUSE_DATABASE,
+        "secure": settings.CLICKHOUSE_SECURE,
+        "user": settings.CLICKHOUSE_USER,
+        "password": settings.CLICKHOUSE_PASSWORD,
+        "ca_certs": settings.CLICKHOUSE_CA,
+        "verify": settings.CLICKHOUSE_VERIFY,
+        "connections_min": settings.CLICKHOUSE_CONN_POOL_MIN,
+        "connections_max": settings.CLICKHOUSE_CONN_POOL_MAX,
+        "settings": {"mutations_sync": "1"} if settings.TEST else {},
     }
-    if CLICKHOUSE_ALT_HOST and CLICKHOUSE_ALT_HOST.strip():
-        kwargs.update({"alt_hosts": CLICKHOUSE_ALT_HOST, "round_robin": True})
+    if settings.CLICKHOUSE_ALT_HOST and settings.CLICKHOUSE_ALT_HOST.strip():
+        kwargs.update({"alt_hosts": settings.CLICKHOUSE_ALT_HOST, "round_robin": True})
     return kwargs
 
 
@@ -53,7 +55,7 @@ def make_ch_client() -> SyncClient:
     return SyncClient(**_settings())
 
 
-def sync_execute(query, args=None, settings=None, with_column_types=False):
+def sync_execute(query, args=None, settings=settings, with_column_types=False):
 
     with make_ch_pool().get_client() as client:
         prepared_sql, prepared_args = _prepare_query(client=client, query=query, args=args)
@@ -66,8 +68,9 @@ def sync_execute(query, args=None, settings=None, with_column_types=False):
             raise err
         finally:
             execution_time = perf_counter() - start_time
-            if SHELL_PLUS_PRINT_SQL:
-                current_app.logger.info("SQL execution time: %.6fs" % (execution_time,))
+            if settings.SHELL_PLUS_PRINT_SQL:
+                print("SQL => %s" % format_sql(prepared_sql))
+                # current_app.logger.info("SQL execution time: %.6fs" % (execution_time,))
     return result
 
 
@@ -113,8 +116,9 @@ def _prepare_query(client: SyncClient, query: str, args: QueryArgs):
 
     formatted_sql = sqlparse.format(rendered_sql, strip_comments=True)
 
-    if SHELL_PLUS_PRINT_SQL:
-        current_app.logger.info('SQL => %s' % format_sql(formatted_sql))
+    if settings.SHELL_PLUS_PRINT_SQL:
+        print("SQL => %s" % format_sql(formatted_sql))
+        # current_app.logger.info('SQL => %s' % format_sql(formatted_sql))
 
     return formatted_sql, prepared_args
 

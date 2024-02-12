@@ -6,9 +6,9 @@ from typing import Any, Dict, List, Optional
 from app.clickhouse.client import sync_execute
 from app.clickhouse.kafka import KAFKA_EVENTS_TOPIC, ClickhouseProducer
 from app.clickhouse.models.event import BULK_INSERT_EVENT_SQL, INSERT_EVENT_SQL
-from app.clickhouse.models.event.sql import MERGE_EVENTS_SQL
-from app.setting import KAFKA_PRODUCER_ENABLED
-from utils import to_UTC_datetime, dt_to_seconds_or_millis_or_micros
+# from app.clickhouse.models.event.sql import MERGE_EVENTS_SQL
+from app.setting import settings
+from app.utils import to_UTC_datetime, dt_to_seconds_or_millis_or_micros
 
 
 def _make_event(properties: Optional[Dict[str, Any]] = {}) -> Dict[str, Any]:
@@ -44,7 +44,7 @@ def bulk_create_events(list_properties: List[Dict[str, Any]]) -> None:
     params = {}
     for index, properties in enumerate(list_properties):
         event = _make_event(properties)
-        if KAFKA_PRODUCER_ENABLED:
+        if settings.KAFKA_PRODUCER_ENABLED:
             data.append(event)
         else:
             inserts.append("(%(uuid_{i})s, %(distinct_id_{i})s, %(env_id_{i})s, %(event_{i})s, %(properties_{i})s, %(timestamp_{i})s, now(), 0)".format(i=index))
@@ -53,5 +53,5 @@ def bulk_create_events(list_properties: List[Dict[str, Any]]) -> None:
     p.produce(topic=KAFKA_EVENTS_TOPIC, data=data, sql=BULK_INSERT_EVENT_SQL + ", ".join(inserts), params=params)
 
 
-def optimize_events() -> None:
-    sync_execute(MERGE_EVENTS_SQL)
+# def optimize_events() -> None:
+#     sync_execute(MERGE_EVENTS_SQL)

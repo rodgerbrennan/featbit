@@ -1,15 +1,15 @@
-from flask import current_app
 from pymongo import MongoClient
 from app.extensions import get_mongodb
-from app.setting import MONGO_DB, MONGO_URI
+from app.setting import settings
 
 
 def get_db():
     try:
-        pymongo = get_mongodb(current_app, MONGO_URI)
+        app=None
+        pymongo = get_mongodb(app, settings.MONGO_URI)
         pymongo.cx.server_info()  # type: ignore
-        db = pymongo.cx[MONGO_DB]  # type: ignore
+        db = pymongo.cx[Setings.MONGO_DB]  # type: ignore
     except:
-        pymongo = MongoClient(MONGO_URI)
-        db = pymongo[MONGO_DB]
+        pymongo = MongoClient(settings.MONGO_URI)
+        db = pymongo[settings.MONGO_DB]
     return db

@@ -1,16 +1,15 @@
-from app.setting import (CLICKHOUSE_CLUSTER, CLICKHOUSE_REPLICATION,
-                         CLICKHOUSE_ENABLE_STORAGE_POLICY)
+from app.setting import settings
 
 
 def cluster() -> str:
-    if CLICKHOUSE_REPLICATION:
-        return f"ON CLUSTER {CLICKHOUSE_CLUSTER}"
+    if settings.CLICKHOUSE_REPLICATION:
+        return f"ON CLUSTER {settings.CLICKHOUSE_CLUSTER}"
     else:
         return ""
 
 
 def storage_policy() -> str:
-    return "SETTINGS storage_policy = 'hot_to_cold'" if CLICKHOUSE_ENABLE_STORAGE_POLICY else ""
+    return "settings storage_policy = 'hot_to_cold'" if settings.CLICKHOUSE_ENABLE_STORAGE_POLICY else ""
 
 
 def optimize_tables() -> None:

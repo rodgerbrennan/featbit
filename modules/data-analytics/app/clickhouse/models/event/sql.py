@@ -1,5 +1,5 @@
 from app.clickhouse.models import cluster
-from app.setting import CLICKHOUSE_REPLICATION
+from app.setting import settings
 
 
 def _internal_event_table_name(is_kafka=False):
@@ -9,7 +9,7 @@ def _internal_event_table_name(is_kafka=False):
 
 
 def event_table_name():
-    if CLICKHOUSE_REPLICATION:
+    if settings.CLICKHOUSE_REPLICATION:
         return 'distributed_events'
     return 'events'
 
@@ -45,4 +45,4 @@ VALUES
 """
 
 
-MERGE_EVENTS_SQL = f"OPTIMIZE TABLE {_internal_event_table_name()} {cluster()} FINAL"
+# MERGE_EVENTS_SQL = f"OPTIMIZE TABLE {_internal_event_table_name()} {cluster()} FINAL"

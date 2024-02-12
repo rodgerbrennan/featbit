@@ -26,7 +26,7 @@ worker_tmp_dir = os.getenv('GUNICORN_WORKER_TMP_DIR', '/tmp')
 otel_endpoint = os.getenv('OTEL_EXPORTER_OTLP_ENDPOINT', 'http://otel-collector:4317')
 otel_service_name = os.getenv('OTEL_SERVICE_NAME', 'featbit-das')
 otel_python_log_level = os.getenv('OTEL_PYTHON_LOG_LEVEL', 'info')
-otel_log_format = os.getenv('OTEL_PYTHON_LOG_FORMAT', '%(msg)s [span_id=%(span_id)s]')
+otel_log_format = os.getenv('OTEL_PYTHON_LOG_FORMAT', '%(asctime)s %(levelname)s [%(name)s] [%(filename)s:%(lineno)d] [trace_id=%(otelTraceID)s span_id=%(otelSpanID)s resource.service.name=%(otelServiceName)s trace_sampled=%(otelTraceSampled)s] - %(message)s')
 
 limit_request_line = 0
 limit_request_field_size = 0
@@ -41,7 +41,7 @@ access_log_format = (
 
 raw_env = ['WSGI=y']
 
-LoggingInstrumentor().instrument(set_logging_format=True)
+LoggingInstrumentor(logging_format='%(asctime)s %(levelname)s [%(name)s] [%(filename)s:%(lineno)d] [trace_id=%(otelTraceID)s span_id=%(otelSpanID)s resource.service.name=%(otelServiceName)s trace_sampled=%(otelTraceSampled)s] - %(message)s').instrument(set_logging_format=True)
 
 logging.basicConfig()
 
@@ -93,5 +93,5 @@ def post_fork(server, worker):
         OTLPLogExporter(endpoint=otel_endpoint, insecure=True)
     )
     _logs.get_logger_provider().add_log_record_processor(log_processor)
-    handler = LoggingHandler(level=logging.DEBUG, logger_provider=logging_provider)
+    handler = LoggingHandler(level=logging.INFO, logger_provider=logging_provider)
     logging.getLogger('gunicorn.error').addHandler(handler)

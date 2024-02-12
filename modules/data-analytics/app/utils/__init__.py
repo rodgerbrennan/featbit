@@ -7,7 +7,6 @@ from uuid import UUID
 import numpy as np
 import pytz
 from dateutil.parser import isoparse
-from flask import jsonify
 
 
 def str_to_bool(value: Any) -> bool:
@@ -32,11 +31,6 @@ def get_from_env(key: str, default: Any = None, *, type_cast: Optional[Callable[
     if type_cast is not None:
         return type_cast(value)
     return value
-
-
-def internal_error_handler(e: Exception):
-    return jsonify(code=500, error=str(e), data={}), 500
-
 
 class SingletonDecorator:
     def __init__(self, klass):

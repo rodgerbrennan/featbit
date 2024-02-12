@@ -3,7 +3,7 @@ from typing import Any, Dict, List
 import pandas as pd
 
 from app.clickhouse.models.event import event_table_name
-from app.main.models.statistics.time_series import date_trunc_format
+from app.mainapp.models.statistics.time_series import date_trunc_format
 from app.mongodb.models.event.util import get_events_sample_from_mongod
 
 FLAG_EVENTS_BY_INTERVAL_CTE = f"""flag_events_by_interval as

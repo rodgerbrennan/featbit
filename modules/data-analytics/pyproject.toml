@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "data-analytics"
+version = "0.1.0"
+description = ""
+authors = ["Rodger Brennan <4884521+rodgerbrennan@users.noreply.github.com>"]
+readme = "README.md"
+packages = [{ include = "app" }]
+
+[tool.poetry.dependencies]
+python = "^3.9.17"
+fastapi = "^0.104.1"
+certifi = "^2018.4.16"
+urllib3 = "^1.22.0"
+python-dateutil = "^2.8.2"
+clickhouse-pool = "^0.5.3"
+clickhouse-driver = "^0.2.6"
+kafka-python = "^2.0.2"
+sqlparse = "^0.3.0"
+numpy = "^1.17"
+scipy = "^1.3"
+pandas = "^1.3"
+statsmodels = "^0.13"
+python-dotenv = "^1.0.1"
+infi-clickhouse-orm = { git = "https://github.com/featbit/infi.clickhouse_orm", rev = "ce2a0f2" }
+redis = "^4.3"
+uvicorn = "^0.24.0.post1"
+pydantic = "^2.3.0"
+pydantic-settings = "^2.1.0"
+opentelemetry-api = "^1.20.0"
+opentelemetry-exporter-otlp = "^1.20.0"
+opentelemetry-instrumentation = "^0.43b0"
+opentelemetry-instrumentation-logging = "^0.43b0"
+# opentelemetry-instrumentation-flask = "^0.43b0"
+# opentelemetry-instrumentation-wsgi = "^0.43b0"
+opentelemetry-sdk = "^1.20.0"
+aiocache = "^0.12.2"
+pymongo = "^4.6.1"
+
+[tool.poetry.group.test.dependencies]
+pytest = "^7.2.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

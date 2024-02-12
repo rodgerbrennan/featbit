@@ -1,5 +1,7 @@
 from typing import Any, Dict, Iterable
 
+from app.setting import settings as appconfig
+
 from app.clickhouse.client import sync_execute
 from app.experimentation.models.event.sql import (
     GET_BINOMIAL_TEST_VARS_SQL, GET_NUMERIC_TEST_VARS_SQL,
@@ -8,13 +10,12 @@ from app.experimentation.models.experiment import Experiment, Variation
 from app.experimentation.models.experiment.experiment_types import (
     BinomialVariation, FrequenstSettings, NumericVariation, OnlineTTest,
     TTestResult)
-from app.setting import DATE_ISO_FMT, DATE_UTC_FMT, IS_PRO
 
 
 def analyze_experiment(experiment: Experiment):
-    if IS_PRO:
-        start = experiment.start.strftime(DATE_ISO_FMT)
-        end = experiment.end.strftime(DATE_ISO_FMT)
+    if appconfig.IS_PRO:
+        start = experiment.start.strftime(appconfig.DATE_ISO_FMT)
+        end = experiment.end.strftime(appconfig.DATE_ISO_FMT)
     else:
         start = experiment.start
         end = experiment.end
@@ -47,8 +48,8 @@ def analyze_experiment(experiment: Experiment):
         'customEventUnit' : experiment.extra_prop('customEventUnit', None),
         'customEventSuccessCriteria': experiment.extra_prop('customEventSuccessCriteria', None),
         'iterationId': experiment.extra_prop('iterationId', None),
-        'startTime': experiment.start.strftime(DATE_UTC_FMT),
-        'endTime': experiment.end.strftime(DATE_UTC_FMT) if experiment.is_finished else None,
+        'startTime': experiment.start.strftime(appconfig.DATE_UTC_FMT),
+        'endTime': experiment.end.strftime(appconfig.DATE_UTC_FMT) if experiment.is_finished else None,
         'isFinish': experiment.is_finished,
         'alpha': settings.alpha,
         'power': settings.power,
@@ -58,7 +59,7 @@ def analyze_experiment(experiment: Experiment):
 
 def _get_variations(experiment: Experiment, query_params: Dict[str, Any]) -> Dict[str, Variation]:
     binomial_test = not experiment.is_numeric_expt
-    if IS_PRO:
+    if appconfig.IS_PRO:
         sql = GET_BINOMIAL_TEST_VARS_SQL if binomial_test else GET_NUMERIC_TEST_VARS_SQL
         rs = sync_execute(sql, args=query_params)
     else:

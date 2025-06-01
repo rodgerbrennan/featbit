@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "FeatBit.EvaluationServer.Hub.Domain/1.0.0": {
+        "runtime": {
+          "FeatBit.EvaluationServer.Hub.Domain.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "FeatBit.EvaluationServer.Hub.Domain/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

@@ -1,0 +1,3 @@
+﻿<Project>
+  <Import Project="../buildMultiTargeting/FeatBit.EvaluationServer.Hub.Api.props" />
+</Project>

@@ -1,6 +1,0 @@
-/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net7.0/FeatBit.EvaluationServer.Shared.csproj.AssemblyReference.cache
-/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net7.0/FeatBit.EvaluationServer.Shared.GeneratedMSBuildEditorConfig.editorconfig
-/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net7.0/FeatBit.EvaluationServer.Shared.AssemblyInfoInputs.cache
-/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net7.0/FeatBit.EvaluationServer.Shared.AssemblyInfo.cs
-/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net7.0/FeatBit.EvaluationServer.Shared.csproj.CoreCompileInputs.cache
-/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net7.0/FeatBit.EvaluationServer.Shared.sourcelink.json

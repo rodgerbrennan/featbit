@@ -1,0 +1,24 @@
+{
+  "Version": 1,
+  "Hash": "yD2DCLeMYYs/8aWCOT11/mx/IuAzjesd9B76loUdMWE=",
+  "Source": "FeatBit.EvaluationServer.Edge",
+  "BasePath": "_content/FeatBit.EvaluationServer.Edge",
+  "Mode": "Default",
+  "ManifestType": "Build",
+  "ReferencedProjectsConfiguration": [
+    {
+      "Identity": "/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Hub/FeatBit.EvaluationServer.Hub.csproj",
+      "Version": 2,
+      "Source": "FeatBit.EvaluationServer.Hub",
+      "GetPublishAssetsTargets": "ComputeReferencedStaticWebAssetsPublishManifest;GetCurrentProjectPublishStaticWebAssetItems",
+      "AdditionalPublishProperties": "",
+      "AdditionalPublishPropertiesToRemove": "WebPublishProfileFile;TargetFramework",
+      "GetBuildAssetsTargets": "GetCurrentProjectBuildStaticWebAssetItems",
+      "AdditionalBuildProperties": "",
+      "AdditionalBuildPropertiesToRemove": "WebPublishProfileFile;TargetFramework"
+    }
+  ],
+  "DiscoveryPatterns": [],
+  "Assets": [],
+  "Endpoints": []
+}

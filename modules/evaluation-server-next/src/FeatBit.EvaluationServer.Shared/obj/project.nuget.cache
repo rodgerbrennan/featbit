@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "dgSpecHash": "l7GAfGvxssg=",
+  "success": true,
+  "projectFilePath": "/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/FeatBit.EvaluationServer.Shared.csproj",
+  "expectedPackageFiles": [
+    "/home/rbrennan/.nuget/packages/microsoft.extensions.dependencyinjection.abstractions/7.0.0/microsoft.extensions.dependencyinjection.abstractions.7.0.0.nupkg.sha512",
+    "/home/rbrennan/.nuget/packages/microsoft.extensions.logging.abstractions/7.0.0/microsoft.extensions.logging.abstractions.7.0.0.nupkg.sha512",
+    "/home/rbrennan/.nuget/packages/system.diagnostics.diagnosticsource/7.0.0/system.diagnostics.diagnosticsource.7.0.0.nupkg.sha512"
+  ],
+  "logs": []
+}

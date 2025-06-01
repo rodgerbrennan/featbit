@@ -1,0 +1,13 @@
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/bin/Debug/net8.0/FeatBit.EvaluationServer.Shared.deps.json
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/bin/Debug/net8.0/FeatBit.EvaluationServer.Shared.dll
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/bin/Debug/net8.0/FeatBit.EvaluationServer.Shared.pdb
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net8.0/FeatBit.EvaluationServer.Shared.csproj.AssemblyReference.cache
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net8.0/FeatBit.EvaluationServer.Shared.GeneratedMSBuildEditorConfig.editorconfig
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net8.0/FeatBit.EvaluationServer.Shared.AssemblyInfoInputs.cache
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net8.0/FeatBit.EvaluationServer.Shared.AssemblyInfo.cs
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net8.0/FeatBit.EvaluationServer.Shared.csproj.CoreCompileInputs.cache
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net8.0/FeatBit.EvaluationServer.Shared.sourcelink.json
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net8.0/FeatBit.EvaluationServer.Shared.dll
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net8.0/refint/FeatBit.EvaluationServer.Shared.dll
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net8.0/FeatBit.EvaluationServer.Shared.pdb
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/FeatBit.EvaluationServer.Shared/obj/Debug/net8.0/ref/FeatBit.EvaluationServer.Shared.dll

@@ -1,0 +1,47 @@
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{D396A562-3E2A-4B2B-A3C3-0F44F0AAFFB5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FeatBit.EvaluationServer.Shared", "src\FeatBit.EvaluationServer.Shared\FeatBit.EvaluationServer.Shared.csproj", "{1B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B6E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FeatBit.EvaluationServer.Edge", "src\FeatBit.EvaluationServer.Edge\FeatBit.EvaluationServer.Edge.csproj", "{2B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B6F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FeatBit.EvaluationServer.Broker", "src\FeatBit.EvaluationServer.Broker\FeatBit.EvaluationServer.Broker.csproj", "{3B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B70}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FeatBit.EvaluationServer.Hub", "src\FeatBit.EvaluationServer.Hub\FeatBit.EvaluationServer.Hub.csproj", "{4B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B71}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B6E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B6E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B6E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B6E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B6F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B6F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B6F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B6F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B70}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B70}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B70}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B70}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B71}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B71}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B71}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B71}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{1B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B6E} = {D396A562-3E2A-4B2B-A3C3-0F44F0AAFFB5}
+		{2B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B6F} = {D396A562-3E2A-4B2B-A3C3-0F44F0AAFFB5}
+		{3B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B70} = {D396A562-3E2A-4B2B-A3C3-0F44F0AAFFB5}
+		{4B5F9E7E-4B6E-4E6E-9B6E-4B6E4E6E9B71} = {D396A562-3E2A-4B2B-A3C3-0F44F0AAFFB5}
+	EndGlobalSection
+EndGlobal

@@ -1,36 +1,120 @@
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using FeatBit.EvaluationServer.Shared.Metrics;
 
 namespace FeatBit.EvaluationServer.Edge.WebSocket;
 
-public class StreamingMetrics : IStreamingMetrics
+public class StreamingMetrics : IStreamingMetrics, IDisposable
 {
+    private const string MeterName = "FeatBit.Edge.WebSocket";
+    private readonly Meter _meter;
+    private readonly Counter<long> _connectionsEstablished;
+    private readonly Counter<long> _connectionsClosed;
+    private readonly Counter<long> _connectionsRejected;
+    private readonly Counter<long> _connectionErrors;
+    private readonly Histogram<double> _connectionDurations;
+    private readonly Histogram<double> _messageProcessingDurations;
+    private readonly Counter<long> _messageProcessingBytes;
+
+    public StreamingMetrics(IMeterFactory meterFactory)
+    {
+        _meter = meterFactory.Create(MeterName);
+        
+        _connectionsEstablished = _meter.CreateCounter<long>(
+            "websocket_connections_established",
+            "connections",
+            "Number of WebSocket connections established"
+        );
+
+        _connectionsClosed = _meter.CreateCounter<long>(
+            "websocket_connections_closed",
+            "connections",
+            "Number of WebSocket connections closed"
+        );
+
+        _connectionsRejected = _meter.CreateCounter<long>(
+            "websocket_connections_rejected",
+            "connections",
+            "Number of WebSocket connections rejected"
+        );
+
+        _connectionErrors = _meter.CreateCounter<long>(
+            "websocket_connection_errors",
+            "errors",
+            "Number of WebSocket connection errors"
+        );
+
+        _connectionDurations = _meter.CreateHistogram<double>(
+            "websocket_connection_duration",
+            "ms",
+            "Duration of WebSocket connections"
+        );
+
+        _messageProcessingDurations = _meter.CreateHistogram<double>(
+            "websocket_message_processing_duration",
+            "ms",
+            "Duration of WebSocket message processing"
+        );
+
+        _messageProcessingBytes = _meter.CreateCounter<long>(
+            "websocket_message_processing_bytes",
+            "bytes",
+            "Total bytes processed in WebSocket messages"
+        );
+    }
+
     public void ConnectionEstablished(string type)
     {
-        // Implementation will be added later
+        _connectionsEstablished.Add(1, new KeyValuePair<string, object?>("type", type));
     }
 
     public void ConnectionClosed(long durationMs)
     {
-        // Implementation will be added later
+        _connectionsClosed.Add(1);
+        _connectionDurations.Record(durationMs);
     }
 
     public void ConnectionRejected(string reason)
     {
-        // Implementation will be added later
+        _connectionsRejected.Add(1, new KeyValuePair<string, object?>("reason", reason));
     }
 
     public void ConnectionError(string errorType)
     {
-        // Implementation will be added later
+        _connectionErrors.Add(1, new KeyValuePair<string, object?>("error_type", errorType));
     }
 
     public IDisposable TrackMessageProcessing(string messageType, int messageSizeBytes)
     {
-        return new NoOpDisposable();
+        _messageProcessingBytes.Add(messageSizeBytes, new KeyValuePair<string, object?>("type", messageType));
+        return new MessageProcessingTimer(this, messageType);
     }
 
-    private class NoOpDisposable : IDisposable
+    private class MessageProcessingTimer : IDisposable
     {
-        public void Dispose() { }
+        private readonly StreamingMetrics _metrics;
+        private readonly string _messageType;
+        private readonly long _startTimestamp;
+
+        public MessageProcessingTimer(StreamingMetrics metrics, string messageType)
+        {
+            _metrics = metrics;
+            _messageType = messageType;
+            _startTimestamp = Stopwatch.GetTimestamp();
+        }
+
+        public void Dispose()
+        {
+            var elapsed = Stopwatch.GetElapsedTime(_startTimestamp);
+            _metrics._messageProcessingDurations.Record(
+                elapsed.TotalMilliseconds,
+                new KeyValuePair<string, object?>("type", _messageType)
+            );
+        }
+    }
+
+    public void Dispose()
+    {
+        _meter.Dispose();
     }
 } 

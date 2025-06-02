@@ -28,55 +28,66 @@ public class KafkaConnection : IBrokerConnection
     {
         try
         {
-            var producerConfig = new ProducerConfig
-            {
-                BootstrapServers = _options.Value.BootstrapServers,
-                ClientId = $"{_options.Value.ClientId}-producer"
-            };
-
-            var consumerConfig = new ConsumerConfig
-            {
-                BootstrapServers = _options.Value.BootstrapServers,
-                GroupId = _options.Value.GroupId,
-                ClientId = $"{_options.Value.ClientId}-consumer",
-                EnableAutoCommit = _options.Value.EnableAutoCommit,
-                AutoCommitIntervalMs = _options.Value.AutoCommitIntervalMs,
-                AutoOffsetReset = Enum.Parse<AutoOffsetReset>(_options.Value.AutoOffsetReset, true),
-                SessionTimeoutMs = _options.Value.SessionTimeoutMs
-            };
-
-            _producer = new ProducerBuilder<string, string>(producerConfig).Build();
-            _consumer = new ConsumerBuilder<string, string>(consumerConfig).Build();
-
-            var adminClient = new AdminClientBuilder(new AdminClientConfig
-            {
-                BootstrapServers = _options.Value.BootstrapServers
-            }).Build();
-
+            var adminClient = CreateAdminClient();
             using (adminClient)
             {
-                await Task.Run(() => adminClient.GetMetadata(TimeSpan.FromSeconds(5)), cancellationToken);
+                var metadata = await Task.Run(() => adminClient.GetMetadata(TimeSpan.FromSeconds(5)));
+                if (metadata != null && metadata.Brokers.Count > 0)
+                {
+                    _producer = CreateProducer();
+                    _consumer = CreateConsumer();
+                    _isConnected = true;
+                    _logger.LogInformation("Successfully connected to Kafka");
+                }
+                else
+                {
+                    throw new Exception("Failed to connect to Kafka: No brokers available");
+                }
             }
-
-            _isConnected = true;
-            _logger.LogInformation("Successfully connected to Kafka at {BootstrapServers}", _options.Value.BootstrapServers);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to connect to Kafka at {BootstrapServers}", _options.Value.BootstrapServers);
+            _logger.LogError(ex, "Failed to connect to Kafka");
             throw;
         }
+    }
+
+    protected virtual IAdminClient CreateAdminClient()
+    {
+        return new AdminClientBuilder(new AdminClientConfig
+        {
+            BootstrapServers = _options.Value.BootstrapServers
+        }).Build();
+    }
+
+    protected virtual IProducer<string, string> CreateProducer()
+    {
+        return new ProducerBuilder<string, string>(new ProducerConfig
+        {
+            BootstrapServers = _options.Value.BootstrapServers,
+            ClientId = _options.Value.ClientId
+        }).Build();
+    }
+
+    protected virtual IConsumer<string, string> CreateConsumer()
+    {
+        return new ConsumerBuilder<string, string>(new ConsumerConfig
+        {
+            BootstrapServers = _options.Value.BootstrapServers,
+            GroupId = _options.Value.GroupId,
+            ClientId = _options.Value.ClientId,
+            EnableAutoCommit = _options.Value.EnableAutoCommit,
+            AutoCommitIntervalMs = _options.Value.AutoCommitIntervalMs,
+            AutoOffsetReset = Enum.Parse<AutoOffsetReset>(_options.Value.AutoOffsetReset),
+            SessionTimeoutMs = _options.Value.SessionTimeoutMs
+        }).Build();
     }
 
     public async Task<bool> TestConnectionAsync()
     {
         try
         {
-            var adminClient = new AdminClientBuilder(new AdminClientConfig
-            {
-                BootstrapServers = _options.Value.BootstrapServers
-            }).Build();
-
+            var adminClient = CreateAdminClient();
             using (adminClient)
             {
                 var metadata = await Task.Run(() => adminClient.GetMetadata(TimeSpan.FromSeconds(5)));

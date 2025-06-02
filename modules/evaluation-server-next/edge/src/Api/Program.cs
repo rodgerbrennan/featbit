@@ -36,7 +36,7 @@ if (app.Environment.IsDevelopment())
 }
 
 // Map health check endpoints
-app.MapHealthChecks("/health/ready", new HealthCheckOptions
+app.MapHealthChecks("/health/readiness", new HealthCheckOptions
 {
     Predicate = check => check.Tags.Contains("ready"),
     ResultStatusCodes =
@@ -47,7 +47,7 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
     }
 });
 
-app.MapHealthChecks("/health/live", new HealthCheckOptions
+app.MapHealthChecks("/health/liveness", new HealthCheckOptions
 {
     Predicate = _ => false,
     ResultStatusCodes =

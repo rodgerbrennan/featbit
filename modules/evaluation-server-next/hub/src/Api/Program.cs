@@ -1,8 +1,8 @@
+using FeatBit.EvaluationServer.Hub.Domain.Common.Messages;
 using FeatBit.EvaluationServer.Hub.Domain.Evaluation;
 using FeatBit.EvaluationServer.Hub.Domain.State;
 using FeatBit.EvaluationServer.Hub.Infrastructure.Evaluation;
 using FeatBit.EvaluationServer.Hub.Infrastructure.State;
-using FeatBit.EvaluationServer.Hub.Streaming.Messages;
 using FeatBit.EvaluationServer.Hub.Streaming.Messages.MessageHandlers;
 using FeatBit.EvaluationServer.Hub.Streaming.Metrics;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;

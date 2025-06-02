@@ -1,7 +1,7 @@
 using System.Text.Json;
+using FeatBit.EvaluationServer.Hub.Domain.Common.Messages;
+using FeatBit.EvaluationServer.Hub.Domain.Common.Models;
 using FeatBit.EvaluationServer.Hub.Domain.Evaluation;
-using FeatBit.EvaluationServer.Hub.Domain.Models;
-using FeatBit.EvaluationServer.Hub.Streaming.Messages;
 using FeatBit.EvaluationServer.Hub.Streaming.Metrics;
 using Microsoft.Extensions.Logging;
 
@@ -25,14 +25,14 @@ public class EvaluationMessageHandler : IMessageHandler
         _logger = logger;
     }
 
-    public async Task HandleAsync(ConnectionContext context, byte[] message)
+    public async Task HandleAsync(ConnectionContext context, ReadOnlyMemory<byte> message)
     {
         try
         {
-            var request = JsonSerializer.Deserialize<EvaluationRequest>(message);
+            var request = JsonSerializer.Deserialize<EvaluationRequest>(message.Span);
             if (request == null)
             {
-                _logger.LogWarning("Invalid evaluation request: {Message}", System.Text.Encoding.UTF8.GetString(message));
+                _logger.LogWarning("Invalid evaluation request: {Message}", System.Text.Encoding.UTF8.GetString(message.Span));
                 _metrics.RecordInvalidRequest();
                 return;
             }
@@ -52,7 +52,8 @@ public class EvaluationMessageHandler : IMessageHandler
                 EvaluatedAt = DateTimeOffset.UtcNow
             };
 
-            await context.SendAsync($"evaluation-result-{request.EnvId}", result);
+            var resultJson = JsonSerializer.SerializeToUtf8Bytes(result);
+            await context.SendAsync(resultJson, CancellationToken.None);
             
             _metrics.RecordEvaluation(
                 request.FlagKey,
@@ -70,7 +71,7 @@ public class EvaluationMessageHandler : IMessageHandler
             _logger.LogError(
                 ex,
                 "Error handling evaluation request: {Message}",
-                System.Text.Encoding.UTF8.GetString(message));
+                System.Text.Encoding.UTF8.GetString(message.Span));
         }
     }
 }

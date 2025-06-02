@@ -1,0 +1,8 @@
+namespace FeatBit.EvaluationServer.Hub.Domain.Common.Models;
+
+public class Secret
+{
+    public string ProjectKey { get; set; } = string.Empty;
+    public string EnvKey { get; set; } = string.Empty;
+    public Guid EnvId { get; set; }
+} 

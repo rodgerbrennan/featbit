@@ -1,17 +1,18 @@
 using FeatBit.EvaluationServer.Edge.Api;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Metrics;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Models;
 using FeatBit.EvaluationServer.Edge.Domain.Interfaces;
 using FeatBit.EvaluationServer.Edge.Infrastructure;
 using FeatBit.EvaluationServer.Edge.WebSocket;
 using FeatBit.EvaluationServer.Edge.WebSocket.Messages;
-using FeatBit.EvaluationServer.Shared.Metrics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.Metrics;
 using Xunit;
-using FeatBit.EvaluationServer.Edge.Domain.Common.Metrics;
+using FeatBit.EvaluationServer.Edge.Api.UnitTests.TestUtils;
 
-namespace Api.UnitTests;
+namespace FeatBit.EvaluationServer.Edge.Api.UnitTests;
 
 public class ServiceCollectionExtensionsTests
 {
@@ -43,7 +44,7 @@ public class ServiceCollectionExtensionsTests
     }
 
     [Fact]
-    public void AddEdgeServices_WithCustomOptions_ConfiguresOptions()
+    public void AddEdgeServices_WithCustomPath_ShouldSetPathInOptions()
     {
         // Arrange
         var services = new ServiceCollection();
@@ -67,26 +68,5 @@ public class ServiceCollectionExtensionsTests
         var options = serviceProvider.GetService<IOptions<StreamingOptions>>();
         Assert.NotNull(options);
         Assert.Equal(customPath, options.Value.PathMatch);
-    }
-}
-
-// Simple test implementation of IMeterFactory
-public class TestMeterFactory : IMeterFactory
-{
-    private readonly Meter _meter;
-
-    public TestMeterFactory(Meter meter)
-    {
-        _meter = meter;
-    }
-
-    public Meter Create(MeterOptions options)
-    {
-        return _meter;
-    }
-
-    public void Dispose()
-    {
-        _meter.Dispose();
     }
 } 

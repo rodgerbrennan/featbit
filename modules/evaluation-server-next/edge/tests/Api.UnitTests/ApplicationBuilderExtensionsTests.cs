@@ -6,6 +6,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Xunit;
 using FeatBit.EvaluationServer.Edge.Api.UnitTests.TestUtils;
+using FeatBit.EvaluationServer.Edge.Domain.Interfaces;
+using Moq;
 
 namespace FeatBit.EvaluationServer.Edge.Api.UnitTests;
 
@@ -22,6 +24,10 @@ public class ApplicationBuilderExtensionsTests
         var meter = new Meter("TestMeter");
         services.AddSingleton<IMeterFactory>(new TestMeterFactory(meter));
         services.AddSingleton<IStreamingMetrics, StreamingMetrics>();
+
+        // Add connection manager mock
+        var connectionManagerMock = new Mock<IConnectionManager>();
+        services.AddSingleton(connectionManagerMock.Object);
 
         var app = new ApplicationBuilder(services.BuildServiceProvider());
 

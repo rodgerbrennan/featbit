@@ -13,6 +13,7 @@ public class KafkaMessageConsumer : IMessageConsumer
     private readonly ILogger<KafkaMessageConsumer> _logger;
     private readonly ConcurrentDictionary<string, Func<IMessage, Task>> _handlers;
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _cancellationTokens;
+    private readonly bool _enableAutoCommit;
     private bool _isRunning;
 
     public KafkaMessageConsumer(
@@ -23,30 +24,37 @@ public class KafkaMessageConsumer : IMessageConsumer
         _logger = logger;
         _handlers = new ConcurrentDictionary<string, Func<IMessage, Task>>();
         _cancellationTokens = new ConcurrentDictionary<string, CancellationTokenSource>();
+        
+        // Get auto-commit setting from the consumer's configuration
+        var consumer = _connection.GetConsumer();
+        _enableAutoCommit = consumer.MemberId != null; // If we have a member ID, we're in a consumer group and auto-commit is enabled
     }
 
     public bool IsRunning => _isRunning;
 
-    public Task StartAsync(CancellationToken cancellationToken = default)
+    public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (_isRunning)
         {
-            return Task.CompletedTask;
+            return;
         }
 
-        foreach (var topic in _handlers.Keys)
+        try
         {
-            var cts = new CancellationTokenSource();
-            _cancellationTokens.TryAdd(topic, cts);
-            
-            // Start consumer loop for each topic
-            _ = ConsumeLoopAsync(topic, cts.Token);
-        }
+            // Initialize all subscriptions
+            foreach (var topic in _handlers.Keys)
+            {
+                await SubscribeAsync(topic, _handlers[topic]);
+            }
 
-        _isRunning = true;
-        _logger.LogInformation("Kafka message consumer started");
-        
-        return Task.CompletedTask;
+            _isRunning = true;
+            _logger.LogInformation("Kafka message consumer started");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error starting Kafka message consumer");
+            throw;
+        }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
@@ -64,7 +72,19 @@ public class KafkaMessageConsumer : IMessageConsumer
                 cts.Cancel();
             }
 
+            // Ensure all topics are properly unsubscribed and consumers closed
+            var consumer = _connection.GetConsumer();
+            consumer.Unsubscribe();
+            
+            // Close consumer gracefully
+            await Task.Run(() => 
+            {
+                consumer.Close();
+                consumer.Dispose();
+            });
+
             _cancellationTokens.Clear();
+            _handlers.Clear();
             _isRunning = false;
             
             _logger.LogInformation("Kafka message consumer stopped");
@@ -76,7 +96,7 @@ public class KafkaMessageConsumer : IMessageConsumer
         }
     }
 
-    public Task SubscribeAsync(string topic, Func<IMessage, Task> handler)
+    public async Task SubscribeAsync(string topic, Func<IMessage, Task> handler)
     {
         _handlers.TryAdd(topic, handler);
 
@@ -85,11 +105,24 @@ public class KafkaMessageConsumer : IMessageConsumer
             var cts = new CancellationTokenSource();
             _cancellationTokens.TryAdd(topic, cts);
             
+            // Initialize subscription with Kafka
+            var consumer = _connection.GetConsumer();
+            consumer.Subscribe(topic);
+
+            // Ensure topic exists and is accessible
+            var adminClient = new AdminClientBuilder(new AdminClientConfig
+            {
+                BootstrapServers = _connection.GetProducer().Name
+            }).Build();
+
+            using (adminClient)
+            {
+                await Task.Run(() => adminClient.GetMetadata(topic, TimeSpan.FromSeconds(5)));
+            }
+            
             // Start consumer loop for the new topic
             _ = ConsumeLoopAsync(topic, cts.Token);
         }
-
-        return Task.CompletedTask;
     }
 
     public Task UnsubscribeAsync(string topic)
@@ -127,7 +160,8 @@ public class KafkaMessageConsumer : IMessageConsumer
                         {
                             await handler(message);
                             
-                            if (!_connection.GetConsumer().Handle.AutoCommitEnabled)
+                            // Check if auto-commit is disabled
+                            if (!_enableAutoCommit)
                             {
                                 consumer.Commit(consumeResult);
                             }

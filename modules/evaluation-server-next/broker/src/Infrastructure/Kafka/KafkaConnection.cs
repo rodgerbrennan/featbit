@@ -48,6 +48,16 @@ public class KafkaConnection : IBrokerConnection
             _producer = new ProducerBuilder<string, string>(producerConfig).Build();
             _consumer = new ConsumerBuilder<string, string>(consumerConfig).Build();
 
+            var adminClient = new AdminClientBuilder(new AdminClientConfig
+            {
+                BootstrapServers = _options.Value.BootstrapServers
+            }).Build();
+
+            using (adminClient)
+            {
+                await Task.Run(() => adminClient.GetMetadata(TimeSpan.FromSeconds(5)), cancellationToken);
+            }
+
             _isConnected = true;
             _logger.LogInformation("Successfully connected to Kafka at {BootstrapServers}", _options.Value.BootstrapServers);
         }
@@ -62,8 +72,16 @@ public class KafkaConnection : IBrokerConnection
     {
         try
         {
-            var metadata = _producer?.GetMetadata(TimeSpan.FromSeconds(5));
-            return metadata != null;
+            var adminClient = new AdminClientBuilder(new AdminClientConfig
+            {
+                BootstrapServers = _options.Value.BootstrapServers
+            }).Build();
+
+            using (adminClient)
+            {
+                var metadata = await Task.Run(() => adminClient.GetMetadata(TimeSpan.FromSeconds(5)));
+                return metadata != null && metadata.Brokers.Count > 0;
+            }
         }
         catch (Exception ex)
         {
@@ -94,8 +112,14 @@ public class KafkaConnection : IBrokerConnection
     {
         try
         {
-            _producer?.Dispose();
-            _consumer?.Dispose();
+            if (_producer != null)
+            {
+                await Task.Run(() => _producer.Dispose());
+            }
+            if (_consumer != null)
+            {
+                await Task.Run(() => _consumer.Dispose());
+            }
             _isConnected = false;
         }
         catch (Exception ex)

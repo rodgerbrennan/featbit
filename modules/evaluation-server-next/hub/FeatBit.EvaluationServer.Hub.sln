@@ -5,13 +5,13 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FeatBit.EvaluationServer.Hub.Api", "src\FeatBit.EvaluationServer.Hub.Api\FeatBit.EvaluationServer.Hub.Api.csproj", "{634E08B2-C99C-4A1C-A0B7-144305D9EBA8}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FeatBit.EvaluationServer.Hub.Api", "src\Api\Api.csproj", "{634E08B2-C99C-4A1C-A0B7-144305D9EBA8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FeatBit.EvaluationServer.Hub.Domain", "src\FeatBit.EvaluationServer.Hub.Domain\FeatBit.EvaluationServer.Hub.Domain.csproj", "{701C03E5-DE03-48A4-9D4E-A9E35043F7CE}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FeatBit.EvaluationServer.Hub.Domain", "src\Domain\Domain.csproj", "{701C03E5-DE03-48A4-9D4E-A9E35043F7CE}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FeatBit.EvaluationServer.Hub.Infrastructure", "src\FeatBit.EvaluationServer.Hub.Infrastructure\FeatBit.EvaluationServer.Hub.Infrastructure.csproj", "{F885424E-8A8E-4BEE-BDB6-CFCBFC2C63D2}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FeatBit.EvaluationServer.Hub.Infrastructure", "src\Infrastructure\Infrastructure.csproj", "{F885424E-8A8E-4BEE-BDB6-CFCBFC2C63D2}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FeatBit.EvaluationServer.Hub.Streaming", "src\FeatBit.EvaluationServer.Hub.Streaming\FeatBit.EvaluationServer.Hub.Streaming.csproj", "{A5D0F807-90B8-4DCF-A971-31DC018FCB30}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FeatBit.EvaluationServer.Hub.Streaming", "src\Streaming\Streaming.csproj", "{A5D0F807-90B8-4DCF-A971-31DC018FCB30}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

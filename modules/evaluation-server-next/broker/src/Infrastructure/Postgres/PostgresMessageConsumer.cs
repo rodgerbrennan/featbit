@@ -32,26 +32,29 @@ public class PostgresMessageConsumer : IMessageConsumer
 
     public bool IsRunning => _isRunning;
 
-    public Task StartAsync(CancellationToken cancellationToken = default)
+    public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (_isRunning)
         {
-            return Task.CompletedTask;
+            return;
         }
 
-        foreach (var topic in _handlers.Keys)
+        try
         {
-            var cts = new CancellationTokenSource();
-            _cancellationTokens.TryAdd(topic, cts);
-            
-            // Start consumer loop for each topic
-            _ = ConsumeLoopAsync(topic, cts.Token);
-        }
+            // Initialize all subscriptions
+            foreach (var topic in _handlers.Keys)
+            {
+                await SubscribeAsync(topic, _handlers[topic]);
+            }
 
-        _isRunning = true;
-        _logger.LogInformation("PostgreSQL message consumer started");
-        
-        return Task.CompletedTask;
+            _isRunning = true;
+            _logger.LogInformation("PostgreSQL message consumer started");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error starting PostgreSQL message consumer");
+            throw;
+        }
     }
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
@@ -63,12 +66,23 @@ public class PostgresMessageConsumer : IMessageConsumer
 
         try
         {
+            // Cancel all consumer loops
             foreach (var cts in _cancellationTokens.Values)
             {
                 cts.Cancel();
             }
 
+            // Ensure all topics are properly unsubscribed in the database
+            await using var connection = await _connection.GetDataSource().OpenConnectionAsync(cancellationToken);
+            foreach (var topic in _handlers.Keys.ToList())
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = $"UNLISTEN {topic}";
+                await command.ExecuteNonQueryAsync(cancellationToken);
+            }
+
             _cancellationTokens.Clear();
+            _handlers.Clear();
             _isRunning = false;
             
             _logger.LogInformation("PostgreSQL message consumer stopped");
@@ -80,7 +94,7 @@ public class PostgresMessageConsumer : IMessageConsumer
         }
     }
 
-    public Task SubscribeAsync(string topic, Func<IMessage, Task> handler)
+    public async Task SubscribeAsync(string topic, Func<IMessage, Task> handler)
     {
         _handlers.TryAdd(topic, handler);
 
@@ -89,11 +103,20 @@ public class PostgresMessageConsumer : IMessageConsumer
             var cts = new CancellationTokenSource();
             _cancellationTokens.TryAdd(topic, cts);
             
+            // Initialize subscription in the database
+            await using var connection = await _connection.GetDataSource().OpenConnectionAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = $@"
+                INSERT INTO {_options.SchemaName}.{_options.SubscriptionsTableName} (topic)
+                VALUES (@topic)
+                ON CONFLICT (topic) DO NOTHING;
+            ";
+            command.Parameters.AddWithValue("topic", topic);
+            await command.ExecuteNonQueryAsync();
+            
             // Start consumer loop for the new topic
             _ = ConsumeLoopAsync(topic, cts.Token);
         }
-
-        return Task.CompletedTask;
     }
 
     public Task UnsubscribeAsync(string topic)
@@ -183,7 +206,9 @@ public class PostgresMessageConsumer : IMessageConsumer
                     Payload = reader.GetString(0),
                     MessageType = reader.GetString(1),
                     Timestamp = reader.GetDateTime(2),
-                    Metadata = JsonSerializer.Deserialize<MessageMetadata>(reader.GetString(3))!
+                    Metadata = reader.IsDBNull(3) 
+                        ? new MessageMetadata() 
+                        : JsonSerializer.Deserialize<MessageMetadata>(reader.GetString(3)) ?? new MessageMetadata()
                 };
 
                 if (_handlers.TryGetValue(topic, out var handler))
@@ -241,7 +266,9 @@ public class PostgresMessageConsumer : IMessageConsumer
                     Payload = reader.GetString(1),
                     MessageType = reader.GetString(2),
                     Timestamp = reader.GetDateTime(3),
-                    Metadata = JsonSerializer.Deserialize<MessageMetadata>(reader.GetString(4))!
+                    Metadata = reader.IsDBNull(4) 
+                        ? new MessageMetadata() 
+                        : JsonSerializer.Deserialize<MessageMetadata>(reader.GetString(4)) ?? new MessageMetadata()
                 };
 
                 if (_handlers.TryGetValue(topic, out var handler))
@@ -289,5 +316,16 @@ public class PostgresMessageConsumer : IMessageConsumer
                 topic
             );
         }
+    }
+
+    private Task SubscribeToTopicAsync(string topic)
+    {
+        var cts = new CancellationTokenSource();
+        _cancellationTokens.TryAdd(topic, cts);
+        
+        // Start consumer loop for the new topic
+        _ = ConsumeLoopAsync(topic, cts.Token);
+
+        return Task.CompletedTask;
     }
 } 

@@ -129,11 +129,12 @@ public class PostgresMessageProducer : IMessageProducer
                     SELECT 1 FROM {_options.SchemaName}.{_options.MessagesTableName}
                     WHERE topic = @topic
                     LIMIT 1
-                );
+                )::boolean;
             ";
             command.Parameters.AddWithValue("topic", topic);
 
-            return (bool)await command.ExecuteScalarAsync();
+            var result = await command.ExecuteScalarAsync();
+            return result is bool b && b;
         }
         catch (Exception ex)
         {

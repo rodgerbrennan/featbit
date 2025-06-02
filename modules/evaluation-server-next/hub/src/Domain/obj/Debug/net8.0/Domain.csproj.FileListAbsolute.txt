@@ -1,0 +1,12 @@
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/hub/src/Domain/bin/Debug/net8.0/Domain.deps.json
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/hub/src/Domain/bin/Debug/net8.0/Domain.dll
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/hub/src/Domain/bin/Debug/net8.0/Domain.pdb
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/hub/src/Domain/obj/Debug/net8.0/Domain.GeneratedMSBuildEditorConfig.editorconfig
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/hub/src/Domain/obj/Debug/net8.0/Domain.AssemblyInfoInputs.cache
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/hub/src/Domain/obj/Debug/net8.0/Domain.AssemblyInfo.cs
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/hub/src/Domain/obj/Debug/net8.0/Domain.csproj.CoreCompileInputs.cache
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/hub/src/Domain/obj/Debug/net8.0/Domain.sourcelink.json
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/hub/src/Domain/obj/Debug/net8.0/Domain.dll
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/hub/src/Domain/obj/Debug/net8.0/refint/Domain.dll
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/hub/src/Domain/obj/Debug/net8.0/Domain.pdb
+/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/hub/src/Domain/obj/Debug/net8.0/ref/Domain.dll

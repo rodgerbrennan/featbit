@@ -3,6 +3,7 @@ using FeatBit.EvaluationServer.Broker.Infrastructure.Configuration;
 using FeatBit.EvaluationServer.Broker.Infrastructure.Redis;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace FeatBit.EvaluationServer.Broker.Core.Extensions;
 
@@ -10,7 +11,8 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddBrokerServices(this IServiceCollection services, IConfiguration configuration)
     {
-        var brokerType = configuration.GetValue<string>("Broker:Type")?.ToLower() ?? "redis";
+        var brokerSection = configuration.GetSection("Broker");
+        var brokerType = brokerSection.GetSection("Type").Value?.ToLower() ?? "redis";
         
         services.AddSingleton<IMessageRoutingService, MessageRoutingService>();
         
@@ -34,9 +36,8 @@ public static class ServiceCollectionExtensions
 
     private static IServiceCollection AddRedisMessageBroker(this IServiceCollection services, IConfiguration configuration)
     {
-        services.Configure<RedisOptions>(
-            configuration.GetSection("Broker:Redis")
-        );
+        services.Configure<RedisOptions>(options => 
+            configuration.GetSection("Broker:Redis").Bind(options));
 
         services.AddSingleton<RedisConnection>();
         services.AddSingleton<RedisMessageProducer>();
@@ -47,9 +48,8 @@ public static class ServiceCollectionExtensions
 
     private static IServiceCollection AddKafkaMessageBroker(this IServiceCollection services, IConfiguration configuration)
     {
-        services.Configure<KafkaOptions>(
-            configuration.GetSection("Broker:Kafka")
-        );
+        services.Configure<KafkaOptions>(options => 
+            configuration.GetSection("Broker:Kafka").Bind(options));
 
         // Add Kafka services
         // TODO: Implement Kafka services
@@ -59,9 +59,8 @@ public static class ServiceCollectionExtensions
 
     private static IServiceCollection AddPostgresMessageBroker(this IServiceCollection services, IConfiguration configuration)
     {
-        services.Configure<PostgresOptions>(
-            configuration.GetSection("Broker:Postgres")
-        );
+        services.Configure<PostgresOptions>(options => 
+            configuration.GetSection("Broker:Postgres").Bind(options));
 
         // Add Postgres services
         // TODO: Implement Postgres services

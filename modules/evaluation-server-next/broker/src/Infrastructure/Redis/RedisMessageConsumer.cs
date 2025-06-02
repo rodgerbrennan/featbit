@@ -108,10 +108,14 @@ public class RedisMessageConsumer : IMessageConsumer
             {
                 if (_handlers.TryGetValue(topic, out var handler))
                 {
-                    var message = JsonSerializer.Deserialize<BrokerMessage>(channelMessage.Message);
-                    if (message != null)
+                    var messageValue = channelMessage.Message.ToString();
+                    if (!string.IsNullOrEmpty(messageValue))
                     {
-                        await handler(message);
+                        var message = JsonSerializer.Deserialize<BrokerMessage>(messageValue);
+                        if (message != null)
+                        {
+                            await handler(message);
+                        }
                     }
                 }
             }

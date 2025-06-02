@@ -56,7 +56,7 @@ public class KafkaMessageProducer : IMessageProducer
         }
     }
 
-    public async Task PublishBatchAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default)
+    public Task PublishBatchAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default)
     {
         var producer = _connection.GetProducer();
         var tasks = new List<Task<DeliveryResult<string, string>>>();
@@ -86,30 +86,41 @@ public class KafkaMessageProducer : IMessageProducer
             }
         }
 
-        try
+        var task = Task.WhenAll(tasks).ContinueWith(t =>
         {
-            await Task.WhenAll(tasks);
-            _logger.LogDebug("Successfully published batch of {Count} messages", messages.Count());
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error publishing batch of messages");
-            throw;
-        }
+            if (t.IsCompletedSuccessfully)
+            {
+                _logger.LogDebug("Successfully published batch of {Count} messages", messages.Count());
+            }
+            else if (t.Exception != null)
+            {
+                _logger.LogError(t.Exception, "Error publishing batch of messages");
+                throw t.Exception;
+            }
+        }, cancellationToken);
+
+        return task;
     }
 
-    public async Task<bool> ValidateTopicAsync(string topic)
+    public Task<bool> ValidateTopicAsync(string topic)
     {
         try
         {
-            var producer = _connection.GetProducer();
-            var metadata = producer.GetMetadata(TimeSpan.FromSeconds(5));
-            return metadata.Topics.Any(t => t.Topic == topic);
+            var adminClient = new AdminClientBuilder(new AdminClientConfig
+            {
+                BootstrapServers = _connection.GetProducer().Name
+            }).Build();
+
+            using (adminClient)
+            {
+                var metadata = adminClient.GetMetadata(TimeSpan.FromSeconds(5));
+                return Task.FromResult(metadata.Topics.Any(t => t.Topic == topic));
+            }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error validating topic {Topic}", topic);
-            return false;
+            return Task.FromResult(false);
         }
     }
 } 

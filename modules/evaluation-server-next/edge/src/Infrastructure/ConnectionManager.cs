@@ -1,8 +1,8 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Models;
 using FeatBit.EvaluationServer.Edge.Domain.Interfaces;
-using FeatBit.EvaluationServer.Edge.Domain.Models;
 using Microsoft.Extensions.Logging;
 
 namespace FeatBit.EvaluationServer.Edge.Infrastructure;

@@ -1,9 +1,9 @@
-using FeatBit.EvaluationServer.Edge.WebSocket;
-using FeatBit.EvaluationServer.Edge.WebSocket.Connections;
+using FeatBit.EvaluationServer.Edge.Streaming;
 using FeatBit.EvaluationServer.Edge.Domain.Interfaces;
-using FeatBit.EvaluationServer.Edge.Domain.Models;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Models;
 using FeatBit.EvaluationServer.Edge.Infrastructure;
-using FeatBit.EvaluationServer.Shared.Metrics;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Metrics;
+using FeatBit.EvaluationServer.Edge.WebSocket;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using FeatBit.EvaluationServer.Edge.Api;

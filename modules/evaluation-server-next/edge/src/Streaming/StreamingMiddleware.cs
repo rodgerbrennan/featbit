@@ -3,11 +3,10 @@ using System.Net.WebSockets;
 using System.Threading;
 using System.Threading.Tasks;
 using FeatBit.EvaluationServer.Edge.Domain.Interfaces;
-using FeatBit.EvaluationServer.Edge.Domain.Models;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Models;
 using FeatBit.EvaluationServer.Edge.WebSocket.Connections;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
-using FeatBit.EvaluationServer.Shared.Models;
 
 namespace FeatBit.EvaluationServer.Edge.Streaming;
 
@@ -40,7 +39,7 @@ public class StreamingMiddleware
         try
         {
             // Create connection context
-            var secrets = new FeatBit.EvaluationServer.Shared.Models.Secret[] { new() { EnvId = Guid.NewGuid() } }; // This should come from validation
+            var secrets = new[] { new Secret { EnvId = Guid.NewGuid() } }; // This should come from validation
             var connectionContext = await DefaultConnectionContext.CreateAsync(webSocket, context, secrets);
             await _connectionManager.Add(connectionContext);
 
@@ -61,7 +60,7 @@ public class StreamingMiddleware
         }
     }
 
-    private async Task HandleWebSocketConnection(FeatBit.EvaluationServer.Edge.Domain.Models.ConnectionContext context)
+    private async Task HandleWebSocketConnection(ConnectionContext context)
     {
         var buffer = new byte[1024 * 4];
         var webSocket = context.WebSocket;

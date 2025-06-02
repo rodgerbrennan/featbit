@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Xunit;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Metrics;
 
 namespace Api.UnitTests;
 

@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
-using FeatBit.EvaluationServer.Shared.Metrics;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Metrics;
 
 namespace FeatBit.EvaluationServer.Edge.WebSocket;
 
@@ -12,6 +12,8 @@ public class StreamingMetrics : IStreamingMetrics, IDisposable
     private readonly Counter<long> _connectionsClosed;
     private readonly Counter<long> _connectionsRejected;
     private readonly Counter<long> _connectionErrors;
+    private readonly Counter<long> _connectionCount;
+    private readonly Counter<long> _messageCount;
     private readonly Histogram<double> _connectionDurations;
     private readonly Histogram<double> _messageProcessingDurations;
     private readonly Counter<long> _messageProcessingBytes;
@@ -42,6 +44,18 @@ public class StreamingMetrics : IStreamingMetrics, IDisposable
             "websocket_connection_errors",
             "errors",
             "Number of WebSocket connection errors"
+        );
+
+        _connectionCount = _meter.CreateCounter<long>(
+            "websocket_connection_count",
+            "connections",
+            "Current number of active WebSocket connections"
+        );
+
+        _messageCount = _meter.CreateCounter<long>(
+            "websocket_message_count",
+            "messages",
+            "Total number of WebSocket messages processed"
         );
 
         _connectionDurations = _meter.CreateHistogram<double>(
@@ -82,6 +96,21 @@ public class StreamingMetrics : IStreamingMetrics, IDisposable
     public void ConnectionError(string errorType)
     {
         _connectionErrors.Add(1, new KeyValuePair<string, object?>("error_type", errorType));
+    }
+
+    public void IncrementConnectionCount()
+    {
+        _connectionCount.Add(1);
+    }
+
+    public void DecrementConnectionCount()
+    {
+        _connectionCount.Add(-1);
+    }
+
+    public void IncrementMessageCount()
+    {
+        _messageCount.Add(1);
     }
 
     public IDisposable TrackMessageProcessing(string messageType, int messageSizeBytes)

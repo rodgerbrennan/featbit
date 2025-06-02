@@ -1,14 +1,13 @@
 using System.Net;
 using System.Net.WebSockets;
-using FeatBit.EvaluationServer.Edge.Domain.Models;
-using FeatBit.EvaluationServer.Shared.Models;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace FeatBit.EvaluationServer.Edge.WebSocket.Connections;
 
-public sealed class DefaultConnectionContext : FeatBit.EvaluationServer.Edge.Domain.Models.ConnectionContext
+public sealed class DefaultConnectionContext : ConnectionContext
 {
     private readonly HttpContext _httpContext;
     private readonly CancellationTokenSource _cts;
@@ -16,7 +15,7 @@ public sealed class DefaultConnectionContext : FeatBit.EvaluationServer.Edge.Dom
     public CancellationToken ConnectionClosed => _cts.Token;
 
     public override string? RawQuery { get; protected init; }
-    public override System.Net.WebSockets.WebSocket WebSocket { get; }
+    public override System.Net.WebSockets.WebSocket WebSocket { get; protected init; }
     public override string Type { get; protected init; }
     public override string Version { get; protected init; }
     public override string Token { get; protected init; }
@@ -88,7 +87,7 @@ public sealed class DefaultConnectionContext : FeatBit.EvaluationServer.Edge.Dom
         var ipAddr = GetIpAddr();
         var host = await GetHostAsync();
 
-        Client = new Client(ipAddr, host);
+        Client = new Client { Id = ipAddr, Name = host };
         return;
 
         string GetIpAddr()

@@ -2,9 +2,9 @@ using System.Buffers;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
-using FeatBit.EvaluationServer.Shared.Messages;
-using FeatBit.EvaluationServer.Shared.Metrics;
-using FeatBit.EvaluationServer.Shared.Models;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Messaging;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Metrics;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Models;
 using Microsoft.Extensions.Logging;
 
 namespace FeatBit.EvaluationServer.Edge.WebSocket.Messages;
@@ -30,7 +30,7 @@ public sealed partial class MessageDispatcher
         ILogger<MessageDispatcher> logger,
         IStreamingMetrics metrics)
     {
-        _handlers = handlers.ToDictionary(handler => handler.Type, StringComparer.OrdinalIgnoreCase);
+        _handlers = handlers.ToDictionary(handler => handler.MessageType, StringComparer.OrdinalIgnoreCase);
         _logger = logger;
         _metrics = metrics;
     }
@@ -139,22 +139,8 @@ public sealed partial class MessageDispatcher
                 return;
             }
 
-            JsonElement data;
-            try
-            {
-                data = message.RootElement.GetProperty(DataPropertyName);
-            }
-            catch (KeyNotFoundException)
-            {
-                _logger.LogWarning("Missing required 'data' property");
-                _metrics.ConnectionError("InvalidMessageFormat");
-                return;
-            }
-
-            var ctx = new MessageContext(connection, data, token);
-
             using var processingTimer = _metrics.TrackMessageProcessing(messageType, bytes.Length);
-            await handler.HandleAsync(ctx);
+            await handler.HandleAsync(bytes);
         }
         catch (JsonException ex)
         {

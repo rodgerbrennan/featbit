@@ -3,16 +3,15 @@ using System.Net.WebSockets;
 using System.Threading;
 using System.Threading.Tasks;
 using FeatBit.EvaluationServer.Edge.Domain.Interfaces;
-using FeatBit.EvaluationServer.Edge.Domain.Models;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Models;
 using FeatBit.EvaluationServer.Edge.WebSocket.Connections;
 using FeatBit.EvaluationServer.Edge.WebSocket.Messages;
-using FeatBit.EvaluationServer.Shared.Metrics;
-using FeatBit.EvaluationServer.Shared.Models;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Metrics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using IConnectionManager = FeatBit.EvaluationServer.Edge.Domain.Interfaces.IConnectionManager;
-using DomainConnectionContext = FeatBit.EvaluationServer.Edge.Domain.Models.ConnectionContext;
+using DomainConnectionContext = FeatBit.EvaluationServer.Edge.Domain.Common.Models.ConnectionContext;
 
 namespace FeatBit.EvaluationServer.Edge.WebSocket;
 

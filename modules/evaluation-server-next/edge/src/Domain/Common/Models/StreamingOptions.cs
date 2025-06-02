@@ -1,6 +1,4 @@
-using FeatBit.EvaluationServer.Shared.Models;
-
-namespace FeatBit.EvaluationServer.Edge.WebSocket;
+namespace FeatBit.EvaluationServer.Edge.Domain.Common.Models;
 
 public class StreamingOptions
 {

@@ -1,4 +1,5 @@
-using FeatBit.EvaluationServer.Edge.WebSocket;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Models;
+using FeatBit.EvaluationServer.Edge.Streaming;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;

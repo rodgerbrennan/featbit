@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using FeatBit.EvaluationServer.Edge.Domain.Models;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Models;
 
 namespace FeatBit.EvaluationServer.Edge.Domain.Interfaces;
 

@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Diagnostics.Metrics;
 using Xunit;
+using FeatBit.EvaluationServer.Edge.Domain.Common.Metrics;
 
 namespace Api.UnitTests;
 

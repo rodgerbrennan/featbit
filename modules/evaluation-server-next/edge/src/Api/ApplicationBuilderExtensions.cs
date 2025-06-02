@@ -1,19 +1,20 @@
-using Edge.Streaming;
+using FeatBit.EvaluationServer.Edge.WebSocket;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
-namespace Edge.Api;
+namespace FeatBit.EvaluationServer.Edge.Api;
 
 public static class ApplicationBuilderExtensions
 {
     public static IApplicationBuilder UseEdgeStreaming(this IApplicationBuilder app)
     {
-        var options = app.ApplicationServices.GetService(typeof(IOptions<StreamingOptions>)) as IOptions<StreamingOptions>;
+        var options = app.ApplicationServices.GetService<IOptions<StreamingOptions>>();
         var streamingOptions = options?.Value ?? new StreamingOptions();
 
         app.UseWebSockets();
         
-        app.Map(streamingOptions.PathMatch, builder =>
+        app.Map(streamingOptions.PathMatch ?? "/streaming", builder =>
         {
             builder.UseMiddleware<StreamingMiddleware>();
         });

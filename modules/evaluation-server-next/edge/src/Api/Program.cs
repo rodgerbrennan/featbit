@@ -1,10 +1,12 @@
 using FeatBit.EvaluationServer.Edge.WebSocket;
 using FeatBit.EvaluationServer.Edge.WebSocket.Connections;
-using FeatBit.EvaluationServer.Edge.Metrics;
-using FeatBit.EvaluationServer.Hub;
+using FeatBit.EvaluationServer.Edge.Domain.Interfaces;
+using FeatBit.EvaluationServer.Edge.Domain.Models;
+using FeatBit.EvaluationServer.Edge.Infrastructure;
 using FeatBit.EvaluationServer.Shared.Metrics;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using FeatBit.EvaluationServer.Edge.Api;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -19,11 +21,11 @@ builder.Services.AddHealthChecks();
 // Add connection management
 builder.Services.AddSingleton<IConnectionManager, ConnectionManager>();
 
-// Add Hub services
-builder.Services.AddHubServices();
-
 // Add metrics
 builder.Services.AddSingleton<IStreamingMetrics, StreamingMetrics>();
+
+// Add edge services
+builder.Services.AddEdgeServices();
 
 var app = builder.Build();
 
@@ -57,6 +59,6 @@ app.MapHealthChecks("/health/live", new HealthCheckOptions
 });
 
 // Use WebSocket streaming
-app.UseStreaming();
+app.UseEdgeStreaming();
 
 app.Run(); 

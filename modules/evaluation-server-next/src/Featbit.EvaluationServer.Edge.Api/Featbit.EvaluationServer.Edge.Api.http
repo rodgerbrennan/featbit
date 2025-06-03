@@ -1,0 +1,6 @@
+@Featbit.EvaluationServer.Edge.Api_HostAddress = http://localhost:5232
+
+GET {{Featbit.EvaluationServer.Edge.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

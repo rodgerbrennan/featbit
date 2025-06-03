@@ -7,30 +7,57 @@ namespace FeatBit.EvaluationServer.Broker.Infrastructure.Redis;
 
 public class RedisConnection : IBrokerConnection
 {
-    private readonly ConnectionMultiplexer _connection;
-    private readonly IDatabase _database;
-    private readonly ISubscriber _subscriber;
+    private readonly IOptions<RedisOptions> _options;
+    private IConnectionMultiplexer? _connection;
+    private bool _isConnected;
 
     public RedisConnection(IOptions<RedisOptions> options)
     {
-        _connection = ConnectionMultiplexer.Connect(options.Value.ConnectionString);
-        _database = _connection.GetDatabase();
-        _subscriber = _connection.GetSubscriber();
+        _options = options;
     }
 
-    public bool IsConnected => _connection.IsConnected;
+    public bool IsConnected => _isConnected;
 
-    public Task ConnectAsync(CancellationToken cancellationToken = default)
+    public async Task ConnectAsync(CancellationToken cancellationToken = default)
     {
-        // Connection is established in constructor
-        return Task.CompletedTask;
+        _connection = await CreateConnectionAsync(_options.Value.ConnectionString, cancellationToken);
+        _isConnected = true;
+    }
+
+    protected virtual async Task<IConnectionMultiplexer> CreateConnectionAsync(string connectionString, CancellationToken cancellationToken = default)
+    {
+        return await ConnectionMultiplexer.ConnectAsync(connectionString);
+    }
+
+    public IDatabase GetDatabase()
+    {
+        if (_connection == null)
+        {
+            throw new InvalidOperationException("Redis connection is not initialized. Call ConnectAsync first.");
+        }
+        return _connection.GetDatabase(_options.Value.Database);
+    }
+
+    public ISubscriber GetSubscriber()
+    {
+        if (_connection == null)
+        {
+            throw new InvalidOperationException("Redis connection is not initialized. Call ConnectAsync first.");
+        }
+        return _connection.GetSubscriber();
     }
 
     public async Task<bool> TestConnectionAsync()
     {
+        if (_connection == null)
+        {
+            return false;
+        }
+
         try
         {
-            await _database.PingAsync();
+            var db = _connection.GetDatabase(_options.Value.Database);
+            await db.PingAsync();
             return true;
         }
         catch
@@ -39,14 +66,12 @@ public class RedisConnection : IBrokerConnection
         }
     }
 
-    public IDatabase GetDatabase() => _database;
-    public ISubscriber GetSubscriber() => _subscriber;
-
     public async ValueTask DisposeAsync()
     {
         if (_connection != null)
         {
             await _connection.DisposeAsync();
+            _isConnected = false;
         }
     }
 } 

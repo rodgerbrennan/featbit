@@ -6,11 +6,36 @@ using Npgsql;
 
 namespace FeatBit.EvaluationServer.Broker.Infrastructure.Postgres;
 
+public interface IPostgresDataSource : IAsyncDisposable
+{
+    ValueTask<NpgsqlConnection> OpenConnectionAsync(CancellationToken cancellationToken = default);
+}
+
+public class PostgresDataSourceWrapper : IPostgresDataSource
+{
+    private readonly NpgsqlDataSource _dataSource;
+
+    public PostgresDataSourceWrapper(NpgsqlDataSource dataSource)
+    {
+        _dataSource = dataSource;
+    }
+
+    public ValueTask<NpgsqlConnection> OpenConnectionAsync(CancellationToken cancellationToken = default)
+    {
+        return _dataSource.OpenConnectionAsync(cancellationToken);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        return _dataSource.DisposeAsync();
+    }
+}
+
 public class PostgresConnection : IBrokerConnection
 {
     private readonly IOptions<PostgresOptions> _options;
-    private readonly ILogger<PostgresConnection> _logger;
-    private NpgsqlDataSource? _dataSource;
+    protected ILogger<PostgresConnection> Logger { get; }
+    private IPostgresDataSource? _dataSource;
     private bool _isConnected;
 
     public PostgresConnection(
@@ -18,7 +43,7 @@ public class PostgresConnection : IBrokerConnection
         ILogger<PostgresConnection> logger)
     {
         _options = options;
-        _logger = logger;
+        Logger = logger;
     }
 
     public bool IsConnected => _isConnected;
@@ -27,23 +52,28 @@ public class PostgresConnection : IBrokerConnection
     {
         try
         {
-            var dataSourceBuilder = new NpgsqlDataSourceBuilder(_options.Value.ConnectionString);
-            _dataSource = dataSourceBuilder.Build();
+            _dataSource = CreateDataSource(_options.Value.ConnectionString);
 
-            await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+            await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
             await InitializeSchemaAsync(connection, cancellationToken);
 
             _isConnected = true;
-            _logger.LogInformation("Successfully connected to PostgreSQL");
+            Logger.LogInformation("Successfully connected to PostgreSQL");
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to connect to PostgreSQL");
+            Logger.LogError(ex, "Failed to connect to PostgreSQL");
             throw;
         }
     }
 
-    public async Task<bool> TestConnectionAsync()
+    protected virtual IPostgresDataSource CreateDataSource(string connectionString)
+    {
+        var dataSourceBuilder = new NpgsqlDataSourceBuilder(connectionString);
+        return new PostgresDataSourceWrapper(dataSourceBuilder.Build());
+    }
+
+    public virtual async Task<bool> TestConnectionAsync()
     {
         if (_dataSource == null)
         {
@@ -52,7 +82,7 @@ public class PostgresConnection : IBrokerConnection
 
         try
         {
-            await using var connection = await _dataSource.OpenConnectionAsync();
+            await using var connection = await _dataSource.OpenConnectionAsync().ConfigureAwait(false);
             await using var command = connection.CreateCommand();
             command.CommandText = "SELECT 1";
             await command.ExecuteScalarAsync();
@@ -60,12 +90,12 @@ public class PostgresConnection : IBrokerConnection
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to test PostgreSQL connection");
+            Logger.LogError(ex, "Failed to test PostgreSQL connection");
             return false;
         }
     }
 
-    public NpgsqlDataSource GetDataSource()
+    public IPostgresDataSource GetDataSource()
     {
         if (_dataSource == null)
         {
@@ -77,6 +107,10 @@ public class PostgresConnection : IBrokerConnection
     private async Task InitializeSchemaAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
     {
         await using var command = connection.CreateCommand();
+        
+        // Create schema if it doesn't exist
+        command.CommandText = $"CREATE SCHEMA IF NOT EXISTS {_options.Value.SchemaName};";
+        await command.ExecuteNonQueryAsync(cancellationToken);
         
         // Create messages table
         command.CommandText = $@"

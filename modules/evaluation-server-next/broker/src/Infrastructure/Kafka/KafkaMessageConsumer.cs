@@ -15,6 +15,7 @@ public class KafkaMessageConsumer : IMessageConsumer
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _cancellationTokens;
     private readonly bool _enableAutoCommit;
     private bool _isRunning;
+    private IConsumer<string, string>? _consumer;
 
     public KafkaMessageConsumer(
         KafkaConnection connection,
@@ -41,11 +42,18 @@ public class KafkaMessageConsumer : IMessageConsumer
 
         try
         {
-            // Initialize all subscriptions
-            foreach (var topic in _handlers.Keys)
+            _consumer = _connection.GetConsumer();
+            
+            // Subscribe to all topics
+            if (_handlers.Count > 0)
             {
-                await SubscribeAsync(topic, _handlers[topic]);
+                _consumer.Subscribe(_handlers.Keys);
             }
+
+            // Start consumer loop for all topics
+            var cts = new CancellationTokenSource();
+            _cancellationTokens.TryAdd("main", cts);
+            _ = ConsumeLoopAsync(cts.Token);
 
             _isRunning = true;
             _logger.LogInformation("Kafka message consumer started");
@@ -73,15 +81,16 @@ public class KafkaMessageConsumer : IMessageConsumer
             }
 
             // Ensure all topics are properly unsubscribed and consumers closed
-            var consumer = _connection.GetConsumer();
-            consumer.Unsubscribe();
-            
-            // Close consumer gracefully
-            await Task.Run(() => 
+            if (_consumer != null)
             {
-                consumer.Close();
-                consumer.Dispose();
-            });
+                _consumer.Unsubscribe();
+                await Task.Run(() => 
+                {
+                    _consumer.Close();
+                    _consumer.Dispose();
+                });
+                _consumer = null;
+            }
 
             _cancellationTokens.Clear();
             _handlers.Clear();
@@ -100,46 +109,36 @@ public class KafkaMessageConsumer : IMessageConsumer
     {
         _handlers.TryAdd(topic, handler);
 
-        if (_isRunning)
+        if (_isRunning && _consumer != null)
         {
-            var cts = new CancellationTokenSource();
-            _cancellationTokens.TryAdd(topic, cts);
-            
-            // Initialize subscription with Kafka
-            var consumer = _connection.GetConsumer();
-            consumer.Subscribe(topic);
-
-            // Ensure topic exists and is accessible
-            var adminClient = new AdminClientBuilder(new AdminClientConfig
-            {
-                BootstrapServers = _connection.GetProducer().Name
-            }).Build();
-
-            using (adminClient)
-            {
-                await Task.Run(() => adminClient.GetMetadata(topic, TimeSpan.FromSeconds(5)));
-            }
-            
-            // Start consumer loop for the new topic
-            _ = ConsumeLoopAsync(topic, cts.Token);
+            // Subscribe to the new topic
+            _consumer.Subscribe(_handlers.Keys);
         }
     }
 
     public Task UnsubscribeAsync(string topic)
     {
-        if (_cancellationTokens.TryRemove(topic, out var cts))
+        if (_handlers.TryRemove(topic, out _) && _isRunning && _consumer != null)
         {
-            cts.Cancel();
+            if (_handlers.Count > 0)
+            {
+                _consumer.Subscribe(_handlers.Keys);
+            }
+            else
+            {
+                _consumer.Unsubscribe();
+            }
         }
 
-        _handlers.TryRemove(topic, out _);
         return Task.CompletedTask;
     }
 
-    private async Task ConsumeLoopAsync(string topic, CancellationToken cancellationToken)
+    private async Task ConsumeLoopAsync(CancellationToken cancellationToken)
     {
-        var consumer = _connection.GetConsumer();
-        consumer.Subscribe(topic);
+        if (_consumer == null)
+        {
+            throw new InvalidOperationException("Consumer is not initialized");
+        }
 
         try
         {
@@ -147,24 +146,44 @@ public class KafkaMessageConsumer : IMessageConsumer
             {
                 try
                 {
-                    var consumeResult = consumer.Consume(cancellationToken);
+                    var consumeResult = _consumer.Consume(cancellationToken);
                     if (consumeResult == null)
                     {
                         continue;
                     }
 
-                    if (_handlers.TryGetValue(topic, out var handler))
+                    if (_handlers.TryGetValue(consumeResult.Topic, out var handler))
                     {
-                        var message = JsonSerializer.Deserialize<BrokerMessage>(consumeResult.Message.Value);
-                        if (message != null)
+                        try
                         {
-                            await handler(message);
-                            
-                            // Check if auto-commit is disabled
-                            if (!_enableAutoCommit)
+                            var message = JsonSerializer.Deserialize<BrokerMessage>(consumeResult.Message.Value);
+                            if (message != null)
                             {
-                                consumer.Commit(consumeResult);
+                                await handler(message);
+                                
+                                // Check if auto-commit is disabled
+                                if (!_enableAutoCommit)
+                                {
+                                    _consumer.Commit(consumeResult);
+                                }
                             }
+                        }
+                        catch (JsonException ex)
+                        {
+                            _logger.LogError(
+                                ex,
+                                "Error deserializing message from topic {Topic}: {Message}",
+                                consumeResult.Topic,
+                                consumeResult.Message.Value
+                            );
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(
+                                ex,
+                                "Error processing message from topic {Topic}",
+                                consumeResult.Topic
+                            );
                         }
                     }
                 }
@@ -173,7 +192,7 @@ public class KafkaMessageConsumer : IMessageConsumer
                     _logger.LogError(
                         ex,
                         "Error consuming message from topic {Topic}",
-                        topic
+                        ex.ConsumerRecord?.Topic ?? "unknown"
                     );
                 }
             }
@@ -184,26 +203,7 @@ public class KafkaMessageConsumer : IMessageConsumer
         }
         catch (Exception ex)
         {
-            _logger.LogError(
-                ex,
-                "Error in consumer loop for topic {Topic}",
-                topic
-            );
-        }
-        finally
-        {
-            try
-            {
-                consumer.Unsubscribe();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(
-                    ex,
-                    "Error unsubscribing from topic {Topic}",
-                    topic
-                );
-            }
+            _logger.LogError(ex, "Error in consumer loop");
         }
     }
 } 

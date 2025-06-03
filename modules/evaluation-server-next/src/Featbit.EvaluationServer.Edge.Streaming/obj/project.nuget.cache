@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "X18dcK8fXeo=",
+  "success": true,
+  "projectFilePath": "/home/rbrennan/source/public-forks/featbit/modules/evaluation-server-next/src/Featbit.EvaluationServer.Edge.Streaming/Featbit.EvaluationServer.Edge.Streaming.csproj",
+  "expectedPackageFiles": [
+    "/home/rbrennan/.nuget/packages/microsoft.aspnetcore.openapi/9.0.4/microsoft.aspnetcore.openapi.9.0.4.nupkg.sha512",
+    "/home/rbrennan/.nuget/packages/microsoft.openapi/1.6.17/microsoft.openapi.1.6.17.nupkg.sha512"
+  ],
+  "logs": []
+}

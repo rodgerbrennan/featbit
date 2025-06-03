@@ -1,7 +1,9 @@
 using System.Text.Json;
 using Confluent.Kafka;
 using FeatBit.EvaluationServer.Broker.Domain.Messages;
+using FeatBit.EvaluationServer.Broker.Infrastructure.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FeatBit.EvaluationServer.Broker.Infrastructure.Kafka;
 
@@ -9,13 +11,16 @@ public class KafkaMessageProducer : IMessageProducer
 {
     private readonly KafkaConnection _connection;
     private readonly ILogger<KafkaMessageProducer> _logger;
+    private readonly IOptions<KafkaOptions> _options;
 
     public KafkaMessageProducer(
         KafkaConnection connection,
-        ILogger<KafkaMessageProducer> logger)
+        ILogger<KafkaMessageProducer> logger,
+        IOptions<KafkaOptions> options)
     {
         _connection = connection;
         _logger = logger;
+        _options = options;
     }
 
     public async Task PublishAsync(IMessage message, CancellationToken cancellationToken = default)
@@ -56,7 +61,7 @@ public class KafkaMessageProducer : IMessageProducer
         }
     }
 
-    public Task PublishBatchAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default)
+    public async Task PublishBatchAsync(IEnumerable<IMessage> messages, CancellationToken cancellationToken = default)
     {
         var producer = _connection.GetProducer();
         var tasks = new List<Task<DeliveryResult<string, string>>>();
@@ -86,41 +91,42 @@ public class KafkaMessageProducer : IMessageProducer
             }
         }
 
-        var task = Task.WhenAll(tasks).ContinueWith(t =>
+        try
         {
-            if (t.IsCompletedSuccessfully)
-            {
-                _logger.LogDebug("Successfully published batch of {Count} messages", messages.Count());
-            }
-            else if (t.Exception != null)
-            {
-                _logger.LogError(t.Exception, "Error publishing batch of messages");
-                throw t.Exception;
-            }
-        }, cancellationToken);
-
-        return task;
+            await Task.WhenAll(tasks);
+            _logger.LogDebug("Successfully published batch of {Count} messages", messages.Count());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error publishing batch of messages");
+            throw;
+        }
     }
 
-    public Task<bool> ValidateTopicAsync(string topic)
+    public async Task<bool> ValidateTopicAsync(string topic)
     {
         try
         {
-            var adminClient = new AdminClientBuilder(new AdminClientConfig
+            var adminClient = CreateAdminClient(new AdminClientConfig
             {
-                BootstrapServers = _connection.GetProducer().Name
-            }).Build();
+                BootstrapServers = _options.Value.BootstrapServers
+            });
 
             using (adminClient)
             {
-                var metadata = adminClient.GetMetadata(TimeSpan.FromSeconds(5));
-                return Task.FromResult(metadata.Topics.Any(t => t.Topic == topic));
+                var metadata = await Task.Run(() => adminClient.GetMetadata(topic, TimeSpan.FromSeconds(5)));
+                return metadata.Topics.Any(t => t.Topic == topic && t.Error.Code == ErrorCode.NoError);
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error validating topic {Topic}", topic);
-            return Task.FromResult(false);
+            return false;
         }
+    }
+
+    protected virtual IAdminClient CreateAdminClient(AdminClientConfig config)
+    {
+        return new AdminClientBuilder(config).Build();
     }
 } 

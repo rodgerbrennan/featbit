@@ -7,6 +7,7 @@ using FeatBit.EvaluationServer.Edge.WebSocket;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using FeatBit.EvaluationServer.Edge.Api;
+using FeatBit.EvaluationServer.Edge.Core.Extensions;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -26,6 +27,9 @@ builder.Services.AddSingleton<IStreamingMetrics, StreamingMetrics>();
 
 // Add edge services
 builder.Services.AddEdgeServices();
+
+// Add Redis services
+builder.Services.AddRedisServices(builder.Configuration);
 
 var app = builder.Build();
 

@@ -9,7 +9,7 @@ namespace FeatBit.EvaluationServer.Broker.Infrastructure.Kafka;
 public class KafkaConnection : IBrokerConnection
 {
     private readonly IOptions<KafkaOptions> _options;
-    private readonly ILogger<KafkaConnection> _logger;
+    protected readonly ILogger<KafkaConnection> Logger;
     private IProducer<string, string>? _producer;
     private IConsumer<string, string>? _consumer;
     private bool _isConnected;
@@ -19,7 +19,7 @@ public class KafkaConnection : IBrokerConnection
         ILogger<KafkaConnection> logger)
     {
         _options = options;
-        _logger = logger;
+        Logger = logger;
     }
 
     public bool IsConnected => _isConnected;
@@ -37,7 +37,7 @@ public class KafkaConnection : IBrokerConnection
                     _producer = CreateProducer();
                     _consumer = CreateConsumer();
                     _isConnected = true;
-                    _logger.LogInformation("Successfully connected to Kafka");
+                    Logger.LogInformation("Connected to Kafka");
                 }
                 else
                 {
@@ -47,7 +47,7 @@ public class KafkaConnection : IBrokerConnection
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to connect to Kafka");
+            Logger.LogError(ex, "Failed to connect to Kafka");
             throw;
         }
     }
@@ -79,7 +79,8 @@ public class KafkaConnection : IBrokerConnection
             EnableAutoCommit = _options.Value.EnableAutoCommit,
             AutoCommitIntervalMs = _options.Value.AutoCommitIntervalMs,
             AutoOffsetReset = Enum.Parse<AutoOffsetReset>(_options.Value.AutoOffsetReset),
-            SessionTimeoutMs = _options.Value.SessionTimeoutMs
+            SessionTimeoutMs = _options.Value.SessionTimeoutMs,
+            AllowAutoCreateTopics = _options.Value.AllowAutoCreateTopics
         }).Build();
     }
 
@@ -96,12 +97,12 @@ public class KafkaConnection : IBrokerConnection
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to test Kafka connection");
+            Logger.LogError(ex, "Failed to test Kafka connection");
             return false;
         }
     }
 
-    public IProducer<string, string> GetProducer()
+    public virtual IProducer<string, string> GetProducer()
     {
         if (_producer == null)
         {
@@ -110,7 +111,7 @@ public class KafkaConnection : IBrokerConnection
         return _producer;
     }
 
-    public IConsumer<string, string> GetConsumer()
+    public virtual IConsumer<string, string> GetConsumer()
     {
         if (_consumer == null)
         {
@@ -126,16 +127,21 @@ public class KafkaConnection : IBrokerConnection
             if (_producer != null)
             {
                 await Task.Run(() => _producer.Dispose());
+                _producer = null;
             }
             if (_consumer != null)
             {
                 await Task.Run(() => _consumer.Dispose());
+                _consumer = null;
             }
-            _isConnected = false;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error disposing Kafka connection");
+            Logger.LogError(ex, "Failed to dispose Kafka connection");
+        }
+        finally
+        {
+            _isConnected = false;
         }
     }
 } 

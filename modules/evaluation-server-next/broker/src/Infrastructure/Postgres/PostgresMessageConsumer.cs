@@ -207,8 +207,8 @@ public class PostgresMessageConsumer : IMessageConsumer
                     MessageType = reader.GetString(1),
                     Timestamp = reader.GetDateTime(2),
                     Metadata = reader.IsDBNull(3) 
-                        ? new MessageMetadata() 
-                        : JsonSerializer.Deserialize<MessageMetadata>(reader.GetString(3)) ?? new MessageMetadata()
+                        ? new FeatBit.EvaluationServer.Broker.Domain.Models.MessageMetadata() 
+                        : JsonSerializer.Deserialize<FeatBit.EvaluationServer.Broker.Domain.Models.MessageMetadata>(reader.GetString(3)) ?? new FeatBit.EvaluationServer.Broker.Domain.Models.MessageMetadata()
                 };
 
                 if (_handlers.TryGetValue(topic, out var handler))
@@ -267,8 +267,8 @@ public class PostgresMessageConsumer : IMessageConsumer
                     MessageType = reader.GetString(2),
                     Timestamp = reader.GetDateTime(3),
                     Metadata = reader.IsDBNull(4) 
-                        ? new MessageMetadata() 
-                        : JsonSerializer.Deserialize<MessageMetadata>(reader.GetString(4)) ?? new MessageMetadata()
+                        ? new FeatBit.EvaluationServer.Broker.Domain.Models.MessageMetadata() 
+                        : JsonSerializer.Deserialize<FeatBit.EvaluationServer.Broker.Domain.Models.MessageMetadata>(reader.GetString(4)) ?? new FeatBit.EvaluationServer.Broker.Domain.Models.MessageMetadata()
                 };
 
                 if (_handlers.TryGetValue(topic, out var handler))

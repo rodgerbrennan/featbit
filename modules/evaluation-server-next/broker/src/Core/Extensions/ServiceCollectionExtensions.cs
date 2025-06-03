@@ -1,4 +1,5 @@
 using FeatBit.EvaluationServer.Broker.Core.Services;
+using FeatBit.EvaluationServer.Broker.Domain.Messages;
 using FeatBit.EvaluationServer.Broker.Infrastructure.Configuration;
 using FeatBit.EvaluationServer.Broker.Infrastructure.Redis;
 using Microsoft.Extensions.Configuration;
@@ -14,7 +15,7 @@ public static class ServiceCollectionExtensions
         var brokerSection = configuration.GetSection("Broker");
         var brokerType = brokerSection.GetSection("Type").Value?.ToLower() ?? "redis";
         
-        services.AddSingleton<IMessageRoutingService, MessageRoutingService>();
+        
         
         switch (brokerType)
         {
@@ -30,6 +31,8 @@ public static class ServiceCollectionExtensions
             default:
                 throw new ArgumentException($"Unsupported broker type: {brokerType}");
         }
+
+        services.AddSingleton<IMessageRoutingService, MessageRoutingService>();
         
         return services;
     }
@@ -40,8 +43,8 @@ public static class ServiceCollectionExtensions
             configuration.GetSection("Broker:Redis").Bind(options));
 
         services.AddSingleton<RedisConnection>();
-        services.AddSingleton<RedisMessageProducer>();
-        services.AddSingleton<RedisMessageConsumer>();
+        services.AddSingleton<IMessageProducer, RedisMessageProducer>();
+        services.AddSingleton<IMessageConsumer, RedisMessageConsumer>();
 
         return services;
     }

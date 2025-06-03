@@ -8,5 +8,5 @@ public class BrokerMessage : IMessage
     public string MessageType { get; set; } = string.Empty;
     public DateTimeOffset Timestamp { get; set; } = DateTimeOffset.UtcNow;
     public string Payload { get; set; } = string.Empty;
-    public MessageMetadata Metadata { get; set; } = new();
+    public FeatBit.EvaluationServer.Broker.Domain.Models.MessageMetadata Metadata { get; set; } = new();
 } 

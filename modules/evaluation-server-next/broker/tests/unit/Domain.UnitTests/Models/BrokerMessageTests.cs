@@ -57,7 +57,7 @@ public class BrokerMessageTests
             MessageType = messageType,
             Payload = payload,
             Timestamp = timestamp,
-            Metadata = new MessageMetadata
+            Metadata = new FeatBit.EvaluationServer.Broker.Domain.Models.MessageMetadata
             {
                 Source = source,
                 CorrelationId = correlationId,

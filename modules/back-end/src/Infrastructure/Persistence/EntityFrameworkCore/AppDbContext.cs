@@ -10,7 +10,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         base.OnModelCreating(modelBuilder);
 
         modelBuilder.ApplyConfiguration(new UserConfiguration());
+        modelBuilder.ApplyConfiguration(new RefreshTokenConfiguration());
         modelBuilder.ApplyConfiguration(new WorkspaceConfiguration());
+        modelBuilder.ApplyConfiguration(new WorkspaceUserConfiguration());
         modelBuilder.ApplyConfiguration(new OrganizationConfiguration());
         modelBuilder.ApplyConfiguration(new OrganizationUserConfiguration());
         modelBuilder.ApplyConfiguration(new ProjectConfiguration());
@@ -33,11 +35,21 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         modelBuilder.ApplyConfiguration(new MemberPolicyConfiguration());
 
         modelBuilder.ApplyConfiguration(new ExperimentConfiguration());
+        modelBuilder.ApplyConfiguration(new ExperimentRunConfiguration());
+        modelBuilder.ApplyConfiguration(new ExperimentLayerConfiguration());
         modelBuilder.ApplyConfiguration(new ExperimentMetricConfiguration());
+        modelBuilder.ApplyConfiguration(new ExperimentExposureEventConfiguration());
+        modelBuilder.ApplyConfiguration(new ExperimentMetricEventConfiguration());
+        modelBuilder.ApplyConfiguration(new ExperimentRunAssignmentConfiguration());
         modelBuilder.ApplyConfiguration(new AccessTokenConfiguration());
+        modelBuilder.ApplyConfiguration(new McpDeviceAuthorizationConfiguration());
+        modelBuilder.ApplyConfiguration(new McpRefreshAuthorizationConfiguration());
+        modelBuilder.ApplyConfiguration(new McpAccessTokenSessionConfiguration());
         modelBuilder.ApplyConfiguration(new RelayProxyConfiguration());
         modelBuilder.ApplyConfiguration(new WebhookConfiguration());
         modelBuilder.ApplyConfiguration(new WebhookDeliveryConfiguration());
         modelBuilder.ApplyConfiguration(new QueueMessageConfiguration());
+
+        modelBuilder.ApplyConfiguration(new DcLeaseConfiguration());
     }
 }

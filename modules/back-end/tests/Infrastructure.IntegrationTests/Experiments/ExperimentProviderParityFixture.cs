@@ -1,0 +1,817 @@
+using System.Collections.Concurrent;
+using Application.Services;
+using Dapper;
+using Domain.EndUsers;
+using Domain.Experiments;
+using Domain.Targeting;
+using Infrastructure.IntegrationTests.Fixtures;
+using Infrastructure.OLAP.ClickHouse;
+using Infrastructure.Persistence.EntityFrameworkCore;
+using Infrastructure.Persistence.MongoDb;
+using Microsoft.Extensions.Options;
+using Npgsql;
+using NpgsqlTypes;
+using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Containers;
+using Infrastructure.Services.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using MongoDB.Driver;
+
+namespace Infrastructure.IntegrationTests.Experiments;
+
+public sealed class ExperimentProviderParityFixture : IAsyncLifetime
+{
+    public static readonly Guid StandardEnvId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    public static readonly Guid UnbalancedEnvId = Guid.Parse("11111111-1111-1111-1111-111111111112");
+    public static readonly Guid SamplingEnvId = Guid.Parse("11111111-1111-1111-1111-111111111113");
+    public static readonly Guid EnvId = StandardEnvId;
+    public const string FlagKey = "checkout-flow";
+    public const string MetricEvent = "purchase";
+    public const string GuardrailEvent = "checkout_error";
+
+    private readonly ConcurrentDictionary<string, Lazy<Task>> _seedTasks = new();
+
+    private readonly IContainer _postgres = new ContainerBuilder("postgres:15.10")
+        .WithEnvironment("POSTGRES_USER", "postgres")
+        .WithEnvironment("POSTGRES_PASSWORD", "please_change_me")
+        .WithEnvironment("POSTGRES_DB", "postgres")
+        .WithPortBinding(5432, true)
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(5432))
+        .Build();
+
+    private readonly IContainer _mongo = new ContainerBuilder("mongo:5.0.32")
+        .WithEnvironment("MONGO_INITDB_ROOT_USERNAME", "admin")
+        .WithEnvironment("MONGO_INITDB_ROOT_PASSWORD", "password")
+        .WithPortBinding(27017, true)
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(27017))
+        .Build();
+
+    private readonly IContainer _clickHouse = new ContainerBuilder("clickhouse/clickhouse-server:23.7")
+        .WithPortBinding(8123, true)
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(8123))
+        .Build();
+
+    public async Task InitializeAsync()
+    {
+        DefaultTypeMap.MatchNamesWithUnderscores = true;
+
+        await Task.WhenAll(
+            _postgres.StartAsync(),
+            _mongo.StartAsync(),
+            _clickHouse.StartAsync()
+        );
+
+        await InitializePostgresAsync();
+        await InitializeClickHouseAsync();
+    }
+
+    public async Task DisposeAsync()
+    {
+        await Task.WhenAll(
+            _postgres.DisposeAsync().AsTask(),
+            _mongo.DisposeAsync().AsTask(),
+            _clickHouse.DisposeAsync().AsTask()
+        );
+    }
+
+    public Task SeedScenarioAsync(string provider) =>
+        EnsureSeededAsync(provider, "standard", () => SeedScenarioCoreAsync(provider));
+
+    private async Task SeedScenarioCoreAsync(string provider)
+    {
+        var exposures = Scenario.Exposures;
+        var metrics = Scenario.Metrics;
+        var users = Scenario.Users;
+
+        await SeedProviderAsync(provider, exposures, metrics, users);
+    }
+
+    public Task SeedUnbalancedVariantScenarioAsync(string provider) =>
+        EnsureSeededAsync(provider, "unbalanced", () => SeedUnbalancedVariantScenarioCoreAsync(provider));
+
+    private async Task SeedUnbalancedVariantScenarioCoreAsync(string provider)
+    {
+        var createdAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var exposures = new List<ScenarioExposure>();
+        var metrics = new List<ScenarioMetric>();
+        var users = new List<ScenarioUser>();
+        var sequence = 1;
+        var metricSequence = 1;
+
+        AddUsers("control", "control", count: 900);
+        AddUsers("treatment", "treatment", count: 100);
+
+        await SeedProviderAsync(provider, exposures, metrics, users);
+        return;
+
+        void AddUsers(string prefix, string variationId, int count)
+        {
+            for (var i = 1; i <= count; i++)
+            {
+                var userKey = $"{prefix}-{i:000}";
+                var exposedAt = DateTimeOffset.Parse("2026-01-01T01:00:00Z").AddSeconds(sequence);
+                users.Add(new ScenarioUser(UnbalancedEnvId, userKey, userKey));
+                exposures.Add(new ScenarioExposure(
+                    GuidFromSequence(100_000 + sequence++),
+                    UnbalancedEnvId,
+                    FlagKey,
+                    userKey,
+                    variationId,
+                    variationId,
+                    exposedAt,
+                    createdAt));
+                metrics.Add(new ScenarioMetric(
+                    MetricGuidFromSequence(100_000 + metricSequence++),
+                    UnbalancedEnvId,
+                    userKey,
+                    MetricEvent,
+                    "CustomEvent",
+                    1,
+                    exposedAt.AddMinutes(1),
+                    createdAt));
+            }
+        }
+    }
+
+    public Task SeedSamplingPlanScenarioAsync(string provider) =>
+        EnsureSeededAsync(provider, "sampling", () => SeedSamplingPlanScenarioCoreAsync(provider));
+
+    private async Task SeedSamplingPlanScenarioCoreAsync(string provider)
+    {
+        var createdAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        var exposures = new List<ScenarioExposure>();
+        var metrics = new List<ScenarioMetric>();
+        var users = new List<ScenarioUser>();
+        var sequence = 1;
+        var metricSequence = 1;
+        var sampledControl = 0;
+        var sampledTreatment = 0;
+        var excludedControl = 0;
+        var candidate = 1;
+        var samplingScope = FlagKey + ":";
+
+        while (sampledControl < 80 || sampledTreatment < 80 || excludedControl < 100)
+        {
+            var userKey = $"sampling-{candidate++:000000}";
+            var controlBucket = DispatchAlgorithm.RolloutOfKey($"{samplingScope}control:{userKey}") * 100;
+
+            if (controlBucket < 11.111111 && sampledControl < 80)
+            {
+                AddUser(userKey, "control", duplicateExposure: sampledControl < 5);
+                sampledControl++;
+            }
+            else if (sampledTreatment < 80)
+            {
+                AddUser(userKey, "treatment", duplicateExposure: sampledTreatment < 5);
+                sampledTreatment++;
+            }
+            else if (controlBucket >= 11.111111 && excludedControl < 100)
+            {
+                AddUser(userKey, "control");
+                excludedControl++;
+            }
+        }
+
+        await SeedProviderAsync(provider, exposures, metrics, users);
+        return;
+
+        void AddUser(string userKey, string variationId, bool duplicateExposure = false)
+        {
+            var exposedAt = DateTimeOffset.Parse("2026-01-01T01:00:00Z").AddSeconds(sequence);
+            users.Add(new ScenarioUser(SamplingEnvId, userKey, userKey));
+
+            exposures.Add(new ScenarioExposure(
+                GuidFromSequence(200_000 + sequence++),
+                SamplingEnvId,
+                FlagKey,
+                userKey,
+                variationId,
+                variationId,
+                exposedAt,
+                createdAt));
+            if (duplicateExposure)
+            {
+                exposures.Add(new ScenarioExposure(
+                    GuidFromSequence(200_000 + sequence++),
+                    SamplingEnvId,
+                    FlagKey,
+                    userKey,
+                    variationId,
+                    variationId,
+                    exposedAt.AddMilliseconds(1),
+                    createdAt));
+            }
+            metrics.Add(new ScenarioMetric(
+                MetricGuidFromSequence(200_000 + metricSequence++),
+                SamplingEnvId,
+                userKey,
+                MetricEvent,
+                "CustomEvent",
+                1,
+                exposedAt.AddMinutes(-1),
+                createdAt));
+            metrics.Add(new ScenarioMetric(
+                MetricGuidFromSequence(200_000 + metricSequence++),
+                SamplingEnvId,
+                userKey,
+                MetricEvent,
+                "CustomEvent",
+                1,
+                exposedAt.AddMinutes(1),
+                createdAt));
+            metrics.Add(new ScenarioMetric(
+                MetricGuidFromSequence(200_000 + metricSequence++),
+                SamplingEnvId,
+                userKey,
+                MetricEvent,
+                "CustomEvent",
+                1,
+                exposedAt.AddMinutes(2),
+                createdAt));
+            metrics.Add(new ScenarioMetric(
+                MetricGuidFromSequence(200_000 + metricSequence++),
+                SamplingEnvId,
+                userKey,
+                GuardrailEvent,
+                "CustomEvent",
+                1,
+                exposedAt.AddMinutes(3),
+                createdAt));
+        }
+    }
+
+    public IExperimentStatsService CreateExperimentStatsService(string provider) => provider switch
+    {
+        "Postgres" => new global::Infrastructure.Services.EntityFrameworkCore.ExperimentStatsService(CreateDbContext()),
+        "MongoDb" => new global::Infrastructure.Services.MongoDb.ExperimentStatsService(CreateMongoDbClient()),
+        "ClickHouse" => new global::Infrastructure.Services.ClickHouse.ExperimentStatsService(CreateClickHouseClient()),
+        _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, null)
+    };
+
+    public IInsightService CreateInsightsService(string provider) => provider switch
+    {
+        "Postgres" => new global::Infrastructure.Services.EntityFrameworkCore.InsightService(CreateDbContext()),
+        "MongoDb" => new global::Infrastructure.Services.MongoDb.InsightService(CreateMongoDbClient()),
+        "ClickHouse" => new global::Infrastructure.Services.ClickHouse.InsightService(CreateClickHouseClient()),
+        _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, null)
+    };
+
+    public IEndUserStatsService CreateEndUserStatsService(string provider) => provider switch
+    {
+        "Postgres" => new global::Infrastructure.Services.EntityFrameworkCore.EndUserStatsService(CreateDbContext()),
+        "MongoDb" => new global::Infrastructure.Services.MongoDb.EndUserStatsService(CreateMongoDbClient()),
+        "ClickHouse" => new global::Infrastructure.Services.ClickHouse.EndUserStatsService(CreateClickHouseClient()),
+        _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, null)
+    };
+
+    public IExperimentMetricService CreateExperimentMetricService(string provider) => provider switch
+    {
+        "Postgres" => new global::Infrastructure.Services.EntityFrameworkCore.ExperimentMetricService(CreateDbContext()),
+        "MongoDb" => new global::Infrastructure.Services.MongoDb.ExperimentMetricService(CreateMongoDbClient()),
+        _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, null)
+    };
+
+    public (IExperimentService ExperimentService, IExperimentMetricService MetricService)
+        CreateExperimentServices(string provider, IExperimentStatsService? stats = null, IFeatureFlagService? flags = null) => provider switch
+    {
+        "Postgres" => CreatePostgresExperimentServices(stats, flags),
+        "MongoDb" => CreateMongoExperimentServices(stats, flags),
+        _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, null)
+    };
+
+    private (IExperimentService ExperimentService, IExperimentMetricService MetricService)
+        CreatePostgresExperimentServices(IExperimentStatsService? stats, IFeatureFlagService? flags)
+    {
+        var dbContext = CreateDbContext();
+        var metricService = new global::Infrastructure.Services.EntityFrameworkCore.ExperimentMetricService(dbContext);
+        return (
+            new global::Infrastructure.Services.EntityFrameworkCore.ExperimentService(
+                dbContext,
+                stats ?? new global::Infrastructure.Services.EntityFrameworkCore.ExperimentStatsService(dbContext),
+                flags ?? new global::Infrastructure.Services.EntityFrameworkCore.FeatureFlagService(
+                    dbContext,
+                    NullLogger<FeatureFlagService>.Instance),
+                metricService),
+            metricService);
+    }
+
+    private (IExperimentService ExperimentService, IExperimentMetricService MetricService)
+        CreateMongoExperimentServices(IExperimentStatsService? stats, IFeatureFlagService? flags)
+    {
+        var client = CreateMongoDbClient();
+        var metricService = new global::Infrastructure.Services.MongoDb.ExperimentMetricService(client);
+        return (
+            new global::Infrastructure.Services.MongoDb.ExperimentService(
+                client,
+                stats ?? new global::Infrastructure.Services.MongoDb.ExperimentStatsService(client),
+                flags ?? new global::Infrastructure.Services.MongoDb.FeatureFlagService(client),
+                metricService),
+            metricService);
+    }
+
+    internal IFeatureFlagService CreateFeatureFlagService(string provider) => provider switch
+    {
+        "Postgres" => new global::Infrastructure.Services.EntityFrameworkCore.FeatureFlagService(
+            CreateDbContext(), NullLogger<FeatureFlagService>.Instance),
+        "MongoDb" => new global::Infrastructure.Services.MongoDb.FeatureFlagService(CreateMongoDbClient()),
+        _ => throw new ArgumentOutOfRangeException(nameof(provider), provider, null)
+    };
+
+    internal AppDbContext CreateDbContext() => AppDbContextFactory.Create(PostgresConnectionString);
+
+    internal MongoDbClient CreateMongoDbClient()
+    {
+        return new MongoDbClient(Options.Create(new MongoDbOptions
+        {
+            ConnectionString = MongoConnectionString,
+            Database = "featbit"
+        }));
+    }
+
+    private ClickHouseClient CreateClickHouseClient(string database = "featbit")
+    {
+        return new ClickHouseClient(new HttpClient(), Options.Create(new ClickHouseOptions
+        {
+            HttpEndpoint = ClickHouseHttpEndpoint,
+            Database = database,
+            User = "default"
+        }));
+    }
+
+    private string PostgresConnectionString =>
+        $"Host=localhost;Port={_postgres.GetMappedPublicPort(5432)};Username=postgres;Password=please_change_me;Database=featbit";
+
+    private string MongoConnectionString =>
+        $"mongodb://admin:password@localhost:{_mongo.GetMappedPublicPort(27017)}";
+
+    private string ClickHouseHttpEndpoint =>
+        $"http://localhost:{_clickHouse.GetMappedPublicPort(8123)}";
+
+    private Task InitializePostgresAsync()
+    {
+        var bootstrapConnectionString = new NpgsqlConnectionStringBuilder(PostgresConnectionString)
+        {
+            Database = "postgres"
+        }.ToString();
+
+        return FeatBitPostgresFixture.ApplyInitScriptsAsync(bootstrapConnectionString);
+    }
+
+    private async Task InitializeClickHouseAsync()
+    {
+        var defaultClient = CreateClickHouseClient("default");
+        await defaultClient.ExecuteCommandAsync("CREATE DATABASE IF NOT EXISTS featbit");
+
+        var client = CreateClickHouseClient();
+        await client.ExecuteCommandAsync("""
+            CREATE TABLE IF NOT EXISTS experiment_exposure_events
+            (
+                id UUID,
+                env_id UUID,
+                flag_key LowCardinality(String),
+                user_key String,
+                user_name String,
+                variation_id LowCardinality(String),
+                variation_value String,
+                exposed_at DateTime64(3, 'UTC'),
+                created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+            )
+            ENGINE = MergeTree
+            PARTITION BY (env_id, toYYYYMM(exposed_at))
+            ORDER BY (env_id, flag_key, exposed_at, cityHash64(user_key))
+            SETTINGS index_granularity = 8192
+            """);
+
+        await client.ExecuteCommandAsync("""
+            CREATE TABLE IF NOT EXISTS experiment_metric_events
+            (
+                id UUID,
+                env_id UUID,
+                user_key String,
+                event_name LowCardinality(String),
+                event_type LowCardinality(String),
+                numeric_value Float64,
+                application_type LowCardinality(String) DEFAULT '',
+                occurred_at DateTime64(3, 'UTC'),
+                created_at DateTime64(3, 'UTC') DEFAULT now64(3)
+            )
+            ENGINE = MergeTree
+            PARTITION BY (env_id, toYYYYMM(occurred_at))
+            ORDER BY (env_id, event_name, occurred_at, cityHash64(user_key))
+            SETTINGS index_granularity = 8192
+            """);
+    }
+
+    private Task EnsureSeededAsync(string provider, string scenario, Func<Task> seed) =>
+        _seedTasks.GetOrAdd(
+            $"{provider}:{scenario}",
+            _ => new Lazy<Task>(seed, LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+
+    private async Task SeedProviderAsync(
+        string provider,
+        IReadOnlyCollection<ScenarioExposure> exposures,
+        IReadOnlyCollection<ScenarioMetric> metrics,
+        IReadOnlyCollection<ScenarioUser> users)
+    {
+        switch (provider)
+        {
+            case "Postgres":
+                await SeedPostgresAsync(exposures, metrics, users);
+                break;
+            case "MongoDb":
+                await SeedMongoAsync(exposures, metrics, users);
+                break;
+            case "ClickHouse":
+                await SeedClickHouseAsync(exposures, metrics, users);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(provider), provider, null);
+        }
+    }
+
+    private async Task SeedPostgresAsync(
+        IEnumerable<ScenarioExposure> exposures,
+        IEnumerable<ScenarioMetric> metrics,
+        IEnumerable<ScenarioUser> users)
+    {
+        await using var connection = new NpgsqlConnection(PostgresConnectionString);
+        await connection.OpenAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+
+        await CopyExposuresAsync(connection, exposures);
+        await CopyMetricsAsync(connection, metrics);
+        await CopyUsersAsync(connection, users);
+
+        await transaction.CommitAsync();
+    }
+
+    private static async Task CopyExposuresAsync(
+        NpgsqlConnection connection,
+        IEnumerable<ScenarioExposure> exposures)
+    {
+        await using var writer = await connection.BeginBinaryImportAsync("""
+            COPY experiment_exposure_events
+                (id, env_id, flag_key, user_key, variation_id, variation_value, exposed_at, created_at)
+            FROM STDIN (FORMAT BINARY)
+            """);
+
+        foreach (var exposure in exposures)
+        {
+            await writer.StartRowAsync();
+            await writer.WriteAsync(exposure.Id, NpgsqlDbType.Uuid);
+            await writer.WriteAsync(exposure.EnvId, NpgsqlDbType.Uuid);
+            await writer.WriteAsync(exposure.FlagKey, NpgsqlDbType.Varchar);
+            await writer.WriteAsync(exposure.UserKey, NpgsqlDbType.Varchar);
+            await writer.WriteAsync(exposure.VariationId, NpgsqlDbType.Varchar);
+            if (exposure.VariationValue is null)
+            {
+                await writer.WriteNullAsync();
+            }
+            else
+            {
+                await writer.WriteAsync(exposure.VariationValue, NpgsqlDbType.Varchar);
+            }
+            await writer.WriteAsync(exposure.ExposedAt, NpgsqlDbType.TimestampTz);
+            await writer.WriteAsync(exposure.CreatedAt, NpgsqlDbType.TimestampTz);
+        }
+
+        await writer.CompleteAsync();
+    }
+
+    private static async Task CopyMetricsAsync(
+        NpgsqlConnection connection,
+        IEnumerable<ScenarioMetric> metrics)
+    {
+        await using var writer = await connection.BeginBinaryImportAsync("""
+            COPY experiment_metric_events
+                (id, env_id, user_key, event_name, event_type, numeric_value, occurred_at, created_at)
+            FROM STDIN (FORMAT BINARY)
+            """);
+
+        foreach (var metric in metrics)
+        {
+            await writer.StartRowAsync();
+            await writer.WriteAsync(metric.Id, NpgsqlDbType.Uuid);
+            await writer.WriteAsync(metric.EnvId, NpgsqlDbType.Uuid);
+            await writer.WriteAsync(metric.UserKey, NpgsqlDbType.Varchar);
+            await writer.WriteAsync(metric.EventName, NpgsqlDbType.Varchar);
+            await writer.WriteAsync(metric.EventType, NpgsqlDbType.Varchar);
+            await writer.WriteAsync(metric.NumericValue, NpgsqlDbType.Double);
+            await writer.WriteAsync(metric.OccurredAt, NpgsqlDbType.TimestampTz);
+            await writer.WriteAsync(metric.CreatedAt, NpgsqlDbType.TimestampTz);
+        }
+
+        await writer.CompleteAsync();
+    }
+
+    private static async Task CopyUsersAsync(
+        NpgsqlConnection connection,
+        IEnumerable<ScenarioUser> users)
+    {
+        var now = DateTime.UtcNow;
+        await using var writer = await connection.BeginBinaryImportAsync("""
+            COPY end_users (id, env_id, key_id, name, customized_properties, created_at, updated_at)
+            FROM STDIN (FORMAT BINARY)
+            """);
+
+        foreach (var user in users)
+        {
+            await writer.StartRowAsync();
+            await writer.WriteAsync(Guid.NewGuid(), NpgsqlDbType.Uuid);
+            await writer.WriteAsync(user.EnvId, NpgsqlDbType.Uuid);
+            await writer.WriteAsync(user.KeyId, NpgsqlDbType.Varchar);
+            await writer.WriteAsync(user.Name, NpgsqlDbType.Varchar);
+            await writer.WriteAsync("[]", NpgsqlDbType.Jsonb);
+            await writer.WriteAsync(now, NpgsqlDbType.TimestampTz);
+            await writer.WriteAsync(now, NpgsqlDbType.TimestampTz);
+        }
+
+        await writer.CompleteAsync();
+    }
+
+    private async Task SeedMongoAsync(
+        IEnumerable<ScenarioExposure> exposures,
+        IEnumerable<ScenarioMetric> metrics,
+        IEnumerable<ScenarioUser> users)
+    {
+        var mongo = CreateMongoDbClient();
+
+        await mongo.CollectionOf<ExperimentExposureEvent>().InsertManyAsync(exposures.Select(x =>
+            new ExperimentExposureEvent
+            {
+                Id = x.Id,
+                EnvId = x.EnvId,
+                FlagKey = x.FlagKey,
+                UserKey = x.UserKey,
+                VariationId = x.VariationId,
+                VariationValue = x.VariationValue,
+                ExposedAt = x.ExposedAt.UtcDateTime,
+                CreatedAt = x.CreatedAt.UtcDateTime
+            }));
+
+        await mongo.CollectionOf<ExperimentMetricEvent>().InsertManyAsync(metrics.Select(x =>
+            new ExperimentMetricEvent
+            {
+                Id = x.Id,
+                EnvId = x.EnvId,
+                UserKey = x.UserKey,
+                EventName = x.EventName,
+                EventType = x.EventType,
+                NumericValue = x.NumericValue,
+                OccurredAt = x.OccurredAt.UtcDateTime,
+                CreatedAt = x.CreatedAt.UtcDateTime
+            }));
+
+        await mongo.CollectionOf<EndUser>().InsertManyAsync(users.Select(x =>
+            new EndUser(null, x.EnvId, x.KeyId, x.Name, [])
+            {
+                Id = Guid.NewGuid()
+            }));
+    }
+
+    private async Task SeedClickHouseAsync(
+        IEnumerable<ScenarioExposure> exposures,
+        IEnumerable<ScenarioMetric> metrics,
+        IEnumerable<ScenarioUser> users)
+    {
+        var userNames = users.ToDictionary(x => x.KeyId, x => x.Name);
+        var clickHouse = CreateClickHouseClient();
+
+        foreach (var chunk in exposures.Chunk(500))
+        {
+            var values = chunk.Select(exposure =>
+            {
+                var userName = userNames.GetValueOrDefault(exposure.UserKey, exposure.UserKey);
+                return $"""
+                    ({ChUuid(exposure.Id)},
+                     {ChUuid(exposure.EnvId)},
+                     {ChString(exposure.FlagKey)},
+                     {ChString(exposure.UserKey)},
+                     {ChString(userName)},
+                     {ChString(exposure.VariationId)},
+                     {ChString(exposure.VariationValue)},
+                     {ChDateTime64(exposure.ExposedAt)},
+                     {ChDateTime64(exposure.CreatedAt)})
+                    """;
+            });
+
+            await clickHouse.ExecuteCommandAsync($"""
+                INSERT INTO experiment_exposure_events
+                    (id, env_id, flag_key, user_key, user_name, variation_id, variation_value, exposed_at, created_at)
+                VALUES
+                    {string.Join(",\n", values)}
+                """);
+        }
+
+        foreach (var chunk in metrics.Chunk(500))
+        {
+            var values = chunk.Select(metric => $"""
+                    ({ChUuid(metric.Id)},
+                     {ChUuid(metric.EnvId)},
+                     {ChString(metric.UserKey)},
+                     {ChString(metric.EventName)},
+                     {ChString(metric.EventType)},
+                     {metric.NumericValue.ToString(System.Globalization.CultureInfo.InvariantCulture)},
+                     {ChDateTime64(metric.OccurredAt)},
+                     {ChDateTime64(metric.CreatedAt)})
+                    """);
+
+            await clickHouse.ExecuteCommandAsync($"""
+                INSERT INTO experiment_metric_events
+                    (id, env_id, user_key, event_name, event_type, numeric_value, occurred_at, created_at)
+                VALUES
+                    {string.Join(",\n", values)}
+                """);
+        }
+    }
+
+    private static Guid GuidFromSequence(int sequence) =>
+        Guid.Parse($"00000000-0000-0000-0000-{sequence:000000000000}");
+
+    private static Guid MetricGuidFromSequence(int sequence) =>
+        Guid.Parse($"10000000-0000-0000-0000-{sequence:000000000000}");
+
+    private static string ChString(string value)
+    {
+        return $"'{value.Replace("\\", "\\\\").Replace("'", "\\'")}'";
+    }
+
+    private static string ChUuid(Guid value)
+    {
+        return $"toUUID('{value}')";
+    }
+
+    private static string ChDateTime64(DateTimeOffset value)
+    {
+        return $"toDateTime64('{value.UtcDateTime:yyyy-MM-dd HH:mm:ss.fff}', 3, 'UTC')";
+    }
+
+    private static class Scenario
+    {
+        private static readonly DateTimeOffset CreatedAt = DateTimeOffset.Parse("2026-01-01T00:00:00Z");
+        private const int SampleSizePerVariant = 500;
+
+        public static readonly ScenarioUser[] Users = BuildUsers();
+        public static readonly ScenarioExposure[] Exposures = BuildExposures();
+        public static readonly ScenarioMetric[] Metrics = BuildMetrics();
+
+        private static ScenarioUser[] BuildUsers()
+        {
+            var users = new List<ScenarioUser>();
+            foreach (var prefix in new[] { "a", "b", "c" })
+            {
+                for (var i = 1; i <= SampleSizePerVariant; i++)
+                {
+                    users.Add(new ScenarioUser(EnvId, UserKey(prefix, i), $"{prefix.ToUpperInvariant()} User {i:000}"));
+                }
+            }
+
+            users.Add(new ScenarioUser(EnvId, "other-flag-user", "Other Flag User"));
+            return users.ToArray();
+        }
+
+        private static ScenarioExposure[] BuildExposures()
+        {
+            var sequence = 1;
+            var exposures = new List<ScenarioExposure>();
+            AddVariantExposures(exposures, ref sequence, "a", "A", "control");
+            AddVariantExposures(exposures, ref sequence, "b", "B", "treatment");
+            AddVariantExposures(exposures, ref sequence, "c", "C", "candidate");
+            exposures.Add(new ScenarioExposure(
+                GuidFromSequence(900001),
+                EnvId,
+                "other-flag",
+                "other-flag-user",
+                "A",
+                "control",
+                DateTimeOffset.Parse("2026-01-01T01:00:00Z"),
+                CreatedAt));
+
+            return exposures.ToArray();
+        }
+
+        private static ScenarioMetric[] BuildMetrics()
+        {
+            var sequence = 1;
+            var metrics = new List<ScenarioMetric>();
+
+            AddNoiseMetrics(metrics, ref sequence, "a", 1);
+            AddNoiseMetrics(metrics, ref sequence, "b", 1);
+            AddNoiseMetrics(metrics, ref sequence, "c", 1);
+
+            for (var i = 1; i <= 250; i++)
+            {
+                AddMetric(metrics, ref sequence, UserKey("a", i), MetricEvent, 10, ExposureAt(i).AddMinutes(10));
+                AddMetric(metrics, ref sequence, UserKey("a", i), MetricEvent, 20, ExposureAt(i).AddMinutes(20));
+            }
+
+            for (var i = 1; i <= 300; i++)
+            {
+                AddMetric(metrics, ref sequence, UserKey("b", i), MetricEvent, 25, ExposureAt(i).AddMinutes(10));
+            }
+
+            for (var i = 1; i <= 200; i++)
+            {
+                AddMetric(metrics, ref sequence, UserKey("c", i), MetricEvent, 1, ExposureAt(i).AddMinutes(10));
+                AddMetric(metrics, ref sequence, UserKey("c", i), MetricEvent, 2, ExposureAt(i).AddMinutes(20));
+                AddMetric(metrics, ref sequence, UserKey("c", i), MetricEvent, 3, ExposureAt(i).AddMinutes(30));
+            }
+
+            return metrics.ToArray();
+        }
+
+        private static void AddVariantExposures(
+            ICollection<ScenarioExposure> exposures,
+            ref int sequence,
+            string userPrefix,
+            string variationId,
+            string variationValue)
+        {
+            for (var i = 1; i <= SampleSizePerVariant; i++)
+            {
+                exposures.Add(new ScenarioExposure(
+                    GuidFromSequence(sequence++),
+                    EnvId,
+                    FlagKey,
+                    UserKey(userPrefix, i),
+                    variationId,
+                    variationValue,
+                    ExposureAt(i),
+                    CreatedAt));
+            }
+        }
+
+        private static void AddNoiseMetrics(
+            ICollection<ScenarioMetric> metrics,
+            ref int sequence,
+            string userPrefix,
+            int userNumber)
+        {
+            var userKey = UserKey(userPrefix, userNumber);
+            var exposedAt = ExposureAt(userNumber);
+            AddMetric(metrics, ref sequence, userKey, MetricEvent, 99, exposedAt.AddMinutes(-10));
+            AddMetric(metrics, ref sequence, userKey, "refund", 1, exposedAt.AddMinutes(10));
+        }
+
+        private static void AddMetric(
+            ICollection<ScenarioMetric> metrics,
+            ref int sequence,
+            string userKey,
+            string eventName,
+            double numericValue,
+            DateTimeOffset occurredAt)
+        {
+            metrics.Add(new ScenarioMetric(
+                MetricGuidFromSequence(sequence++),
+                EnvId,
+                userKey,
+                eventName,
+                "CustomEvent",
+                numericValue,
+                occurredAt,
+                CreatedAt));
+        }
+
+        private static DateTimeOffset ExposureAt(int userNumber)
+        {
+            var dayStart = userNumber <= 250
+                ? DateTimeOffset.Parse("2026-01-01T01:00:00Z")
+                : DateTimeOffset.Parse("2026-01-02T01:00:00Z");
+            var indexInDay = (userNumber - 1) % 250;
+
+            return dayStart.AddMinutes(indexInDay);
+        }
+
+        private static string UserKey(string prefix, int number) => $"{prefix}-{number:000}";
+
+        private static Guid GuidFromSequence(int sequence) =>
+            Guid.Parse($"00000000-0000-0000-0000-{sequence:000000000000}");
+
+        private static Guid MetricGuidFromSequence(int sequence) =>
+            Guid.Parse($"10000000-0000-0000-0000-{sequence:000000000000}");
+    }
+}
+
+public sealed record ScenarioUser(Guid EnvId, string KeyId, string Name);
+
+public sealed record ScenarioExposure(
+    Guid Id,
+    Guid EnvId,
+    string FlagKey,
+    string UserKey,
+    string VariationId,
+    string VariationValue,
+    DateTimeOffset ExposedAt,
+    DateTimeOffset CreatedAt
+);
+
+public sealed record ScenarioMetric(
+    Guid Id,
+    Guid EnvId,
+    string UserKey,
+    string EventName,
+    string EventType,
+    double NumericValue,
+    DateTimeOffset OccurredAt,
+    DateTimeOffset CreatedAt
+);

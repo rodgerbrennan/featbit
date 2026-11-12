@@ -1,54 +1,84 @@
 using Application.Bases.Models;
-using Application.ExperimentMetrics;
+using Application.Experiments.ExperimentMetrics;
+using Api.Authentication;
+using Domain.Policies;
 
 namespace Api.Controllers;
 
+[Authorize(Permissions.CanAccessEnv)]
 [Route("api/v{version:apiVersion}/envs/{envId:guid}/experiment-metrics")]
 public class ExperimentMetricController : ApiControllerBase
 {
+    [OpenApi]
     [HttpGet]
     public async Task<ApiResponse<PagedResult<ExperimentMetricVm>>> GetListAsync(
         Guid envId,
         [FromQuery] ExperimentMetricFilter filter)
     {
-        var request = new GetExperimentMetricList
+        var metrics = await Mediator.Send(new GetExperimentMetricList
         {
             EnvId = envId,
             Filter = filter
-        };
+        });
 
-        var metrics = await Mediator.Send(request);
         return Ok(metrics);
     }
 
-
+    [OpenApi]
     [HttpPost]
-    public async Task<ApiResponse<ExperimentMetricVm>> CreateAsync(Guid envId, CreateExperimentMetric request)
+    public async Task<ApiResponse<ExperimentMetricVm>> CreateAsync(
+        Guid envId,
+        CreateExperimentMetricRequest request)
     {
-        request.EnvId = envId;
-        var metricVm = await Mediator.Send(request);
-        return Ok(metricVm);
-    }
-
-    [HttpPut("{id:guid}")]
-    public async Task<ApiResponse<ExperimentMetricVm>> UpdateAsync(Guid id, UpdateExperimentMetric request)
-    {
-        request.Id = id;
-
-        var metricVm = await Mediator.Send(request);
-
-        return Ok(metricVm);
-    }
-
-    [HttpPut("{id:guid}/archive")]
-    public async Task<ApiResponse<bool>> ArchiveAsync(Guid id)
-    {
-        var request = new ArchiveExperimentMetric
+        var metric = await Mediator.Send(new CreateExperimentMetric
         {
-            Id = id
-        };
+            EnvId = envId,
+            Request = request
+        });
 
-        var success = await Mediator.Send(request);
-        return Ok(success);
+        return Ok(metric);
+    }
+
+    [OpenApi]
+    [HttpPut("{id:guid}")]
+    public async Task<ApiResponse<ExperimentMetricVm>> UpdateAsync(
+        Guid envId,
+        Guid id,
+        UpdateExperimentMetricRequest request)
+    {
+        var metric = await Mediator.Send(new UpdateExperimentMetric
+        {
+            EnvId = envId,
+            Id = id,
+            Request = request
+        });
+
+        return Ok(metric);
+    }
+
+    [OpenApi]
+    [HttpPut("{id:guid}/archive")]
+    public async Task<ApiResponse<bool>> ArchiveAsync(Guid envId, Guid id)
+    {
+        await Mediator.Send(new ArchiveExperimentMetric
+        {
+            EnvId = envId,
+            Id = id
+        });
+
+        return Ok(true);
+    }
+
+    [OpenApi]
+    [HttpPut("{id:guid}/restore")]
+    public async Task<ApiResponse<bool>> RestoreAsync(Guid envId, Guid id)
+    {
+        await Mediator.Send(new RestoreExperimentMetric
+        {
+            EnvId = envId,
+            Id = id
+        });
+
+        return Ok(true);
     }
 }

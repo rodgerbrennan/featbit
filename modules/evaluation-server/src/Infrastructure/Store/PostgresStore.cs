@@ -1,7 +1,8 @@
 using System.Text.Json;
 using Dapper;
+using Domain.Secrets;
 using Domain.Shared;
-using Infrastructure.Utils;
+using Infrastructure.Persistence.Postgres;
 using Npgsql;
 
 namespace Infrastructure.Store;
@@ -30,14 +31,14 @@ public class PostgresStore(NpgsqlDataSource dataSource) : IDbStore
         await using var connection = await dataSource.OpenConnectionAsync();
 
         var rows = await connection.QueryAsync(
-            "select * from feature_flags where env_id = @envId and updated_at > @time",
-            new { envId, time = DateTime.UnixEpoch.AddMilliseconds(timestamp) }
+            "select * from feature_flags where env_id = @envId and date_trunc('milliseconds', updated_at) > @time",
+            new { envId, time = DateTimeOffset.FromUnixTimeMilliseconds(timestamp) }
         );
 
-        return rows.Select(row => SerializeFlag((row as IDictionary<string, object>)!));
+        return rows.Select(row => RowSerializer.SerializeFlag((row as IDictionary<string, object>)!));
     }
 
-    public async Task<IEnumerable<byte[]>> GetFlagsAsync(IEnumerable<string> ids)
+    public async Task<IEnumerable<byte[]>> GetFlagsAsync(string[] ids)
     {
         await using var connection = await dataSource.OpenConnectionAsync();
 
@@ -46,7 +47,7 @@ public class PostgresStore(NpgsqlDataSource dataSource) : IDbStore
             new { ids }
         );
 
-        return rows.Select(row => SerializeFlag((row as IDictionary<string, object>)!));
+        return rows.Select(row => RowSerializer.SerializeFlag((row as IDictionary<string, object>)!));
     }
 
     public async Task<byte[]> GetSegmentAsync(string id)
@@ -58,7 +59,7 @@ public class PostgresStore(NpgsqlDataSource dataSource) : IDbStore
             new { id }
         );
 
-        return SerializeSegment((segment as IDictionary<string, object>)!);
+        return RowSerializer.SerializeSegment((segment as IDictionary<string, object>)!);
     }
 
     public async Task<IEnumerable<byte[]>> GetSegmentsAsync(Guid envId, long timestamp)
@@ -79,10 +80,10 @@ public class PostgresStore(NpgsqlDataSource dataSource) : IDbStore
             return [];
         }
 
-        var rows = await connection.QueryAsync(
+        var results = await connection.QueryAsync(
             """
             select * from segments
-            where updated_at > @time
+            where date_trunc('milliseconds', updated_at) > @time
               and workspace_id = @workspaceId
               and exists (
                   select 1
@@ -92,13 +93,20 @@ public class PostgresStore(NpgsqlDataSource dataSource) : IDbStore
             """,
             new
             {
-                time = DateTime.UnixEpoch.AddMilliseconds(timestamp),
+                time = DateTimeOffset.FromUnixTimeMilliseconds(timestamp),
                 workspaceId = (Guid)rnRow["workspace_id"],
                 envRN = $"{rnRow["rn"] as string}:"
             }
         );
 
-        return rows.Select(row => SerializeSegment((row as IDictionary<string, object>)!));
+        // replace env_id field for shared segments
+        var rows = results.AsList();
+        foreach (var row in rows)
+        {
+            row.env_id = envId;
+        }
+
+        return rows.Select(row => RowSerializer.SerializeSegment((row as IDictionary<string, object>)!));
     }
 
     public async Task<Secret?> GetSecretAsync(string secretString)
@@ -140,62 +148,5 @@ public class PostgresStore(NpgsqlDataSource dataSource) : IDbStore
 
         // no matching secret found
         return null;
-    }
-
-    private static byte[] SerializeFlag(IDictionary<string, object> row)
-    {
-        using MemoryStream stream = new();
-        using Utf8JsonWriter writer = new(stream);
-
-        // ignore the following properties as they're unnecessary: 
-        // revision, tags, created_at, creator_id, updator_id
-
-        writer.WriteStartObject();
-
-        writer.WriteString("id", (Guid)row["id"]);
-        writer.WriteString("envId", (Guid)row["env_id"]);
-        writer.WriteString("name", row["name"] as string);
-        writer.WriteString("description", row["description"] as string);
-        writer.WriteString("key", row["key"] as string);
-        writer.WriteString("variationType", row["variation_type"] as string);
-        writer.WriteJsonString("variations", row["variations"] as string);
-        writer.WriteJsonString("targetUsers", row["target_users"] as string);
-        writer.WriteJsonString("rules", row["rules"] as string);
-        writer.WriteBoolean("isEnabled", (bool)row["is_enabled"]);
-        writer.WriteString("disabledVariationId", row["disabled_variation_id"] as string);
-        writer.WriteJsonString("fallthrough", row["fallthrough"] as string);
-        writer.WriteBoolean("exptIncludeAllTargets", (bool)row["expt_include_all_targets"]);
-        writer.WriteString("updatedAt", (DateTime)row["updated_at"]);
-        writer.WriteBoolean("isArchived", (bool)row["is_archived"]);
-
-        writer.WriteEndObject();
-
-        writer.Flush();
-        return stream.ToArray();
-    }
-
-    private static byte[] SerializeSegment(IDictionary<string, object> row)
-    {
-        using MemoryStream stream = new();
-        using Utf8JsonWriter writer = new(stream);
-
-        // ignore the following properties as they're unnecessary:
-        // workspace_id, type, scopes, created_at
-        writer.WriteStartObject();
-
-        writer.WriteString("id", (Guid)row["id"]);
-        writer.WriteString("envId", (Guid)row["env_id"]);
-        writer.WriteString("name", row["name"] as string);
-        writer.WriteString("description", row["description"] as string);
-        writer.WriteStringArray("included", row["included"] as string[]);
-        writer.WriteStringArray("excluded", row["excluded"] as string[]);
-        writer.WriteJsonString("rules", row["rules"] as string);
-        writer.WriteString("updatedAt", (DateTime)row["updated_at"]);
-        writer.WriteBoolean("isArchived", (bool)row["is_archived"]);
-
-        writer.WriteEndObject();
-
-        writer.Flush();
-        return stream.ToArray();
     }
 }

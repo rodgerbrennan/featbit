@@ -1,12 +1,23 @@
 using Application.Bases;
+using Application.Bases.Exceptions;
+using Domain.Policies;
 
 namespace Application.AccessTokens;
 
-public class UpdateAccessToken : IRequest<bool>
+public class UpdateAccessTokenPayload
 {
+    public string Name { get; set; }
+
+    public PolicyStatement[] Permissions { get; set; } = [];
+}
+
+public class UpdateAccessToken : UpdateAccessTokenPayload, IRequest<AccessTokenVm>
+{
+    public Guid OrganizationId { get; set; }
+
     public Guid Id { get; set; }
 
-    public string Name { get; set; }
+    public PolicyStatement[] CurrentUserPermissions { get; set; } = [];
 }
 
 public class UpdateAccessTokenValidator : AbstractValidator<UpdateAccessToken>
@@ -18,22 +29,29 @@ public class UpdateAccessTokenValidator : AbstractValidator<UpdateAccessToken>
     }
 }
 
-public class UpdateAccessTokenHandler : IRequestHandler<UpdateAccessToken, bool>
+public class UpdateAccessTokenHandler(IAccessTokenService service, IMapper mapper)
+    : IRequestHandler<UpdateAccessToken, AccessTokenVm>
 {
-    private readonly IAccessTokenService _service;
-
-    public UpdateAccessTokenHandler(IAccessTokenService service)
+    public async Task<AccessTokenVm> Handle(UpdateAccessToken request, CancellationToken cancellationToken)
     {
-        _service = service;
-    }
+        var accessToken = await service.GetAsync(request.Id);
 
-    public async Task<bool> Handle(UpdateAccessToken request, CancellationToken cancellationToken)
-    {
-        var accessToken = await _service.GetAsync(request.Id);
-        accessToken.UpdateName(request.Name);
+        AccessTokenAuthorization.EnsureOrganization(accessToken, request.OrganizationId);
+        AccessTokenAuthorization.EnsureCanManage(request.CurrentUserPermissions, accessToken.Type);
 
-        await _service.UpdateAsync(accessToken);
+        var accessTokenWithSameName = await service.FindOneAsync(x =>
+            x.OrganizationId == request.OrganizationId &&
+            x.Id != request.Id &&
+            string.Equals(x.Name.ToLower(), request.Name.ToLower())
+        );
+        if (accessTokenWithSameName != null)
+        {
+            throw new BusinessException(ErrorCodes.NameHasBeenUsed);
+        }
 
-        return true;
+        accessToken.Update(request.Name, request.Permissions);
+        await service.UpdateAsync(accessToken);
+
+        return mapper.Map<AccessTokenVm>(accessToken);
     }
 }

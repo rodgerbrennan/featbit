@@ -1,0 +1,24 @@
+using Domain.Experiments;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace Infrastructure.Persistence.EntityFrameworkCore.Configurations;
+
+public class ExperimentLayerConfiguration : IEntityTypeConfiguration<ExperimentLayer>
+{
+    public void Configure(EntityTypeBuilder<ExperimentLayer> builder)
+    {
+        builder.ToTable("experiment_layers");
+
+        builder.HasIndex(x => new { x.EnvId, x.Key }).IsUnique();
+
+        builder.Property(x => x.EnvId).HasColumnName("env_id");
+        builder.Property(x => x.Name).HasMaxLength(256).IsRequired();
+        builder.Property(x => x.Key).HasMaxLength(128).IsRequired();
+        builder.Property(x => x.Description).HasColumnName("description");
+        builder.Property(x => x.AssignmentUnitSelector).HasColumnName("assignment_unit_selector").HasMaxLength(256);
+        builder.Property(x => x.Status).HasMaxLength(64).IsRequired();
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at");
+        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");
+    }
+}

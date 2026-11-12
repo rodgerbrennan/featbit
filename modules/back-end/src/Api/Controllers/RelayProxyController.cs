@@ -1,6 +1,8 @@
-﻿using Domain.RelayProxies;
+﻿using System.Net;
+using Domain.RelayProxies;
 using Application.Bases.Models;
 using Application.RelayProxies;
+using Domain.Policies;
 
 namespace Api.Controllers;
 
@@ -8,7 +10,8 @@ namespace Api.Controllers;
 public class RelayProxyController : ApiControllerBase
 {
     [HttpGet]
-    public async Task<ApiResponse<PagedResult<RelayProxy>>> GetListAsync([FromQuery] RelayProxyFilter filter)
+    [Authorize(Permissions.ListRelayProxies)]
+    public async Task<ApiResponse<PagedResult<RelayProxyVm>>> GetListAsync([FromQuery] RelayProxyFilter filter)
     {
         var request = new GetRelayProxyList
         {
@@ -16,11 +19,12 @@ public class RelayProxyController : ApiControllerBase
             Filter = filter
         };
 
-        var relayProxies = await Mediator.Send(request);
-        return Ok(relayProxies);
+        var rpVms = await Mediator.Send(request);
+        return Ok(rpVms);
     }
 
     [HttpPost]
+    [Authorize(Permissions.ManageRelayProxies)]
     public async Task<ApiResponse<RelayProxy>> CreateAsync(CreateRelayProxy request)
     {
         request.OrganizationId = OrgId;
@@ -30,6 +34,7 @@ public class RelayProxyController : ApiControllerBase
     }
 
     [HttpPut("{id:guid}")]
+    [Authorize(Permissions.ManageRelayProxies)]
     public async Task<ApiResponse<bool>> UpdateAsync(Guid id, UpdateRelayProxy request)
     {
         request.Id = id;
@@ -39,6 +44,7 @@ public class RelayProxyController : ApiControllerBase
     }
 
     [HttpGet("is-name-used")]
+    [Authorize(Permissions.ManageRelayProxies)]
     public async Task<ApiResponse<bool>> IsNameUsedAsync(string name)
     {
         var request = new IsRelayProxyNameUsed
@@ -52,6 +58,7 @@ public class RelayProxyController : ApiControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [Authorize(Permissions.ManageRelayProxies)]
     public async Task<ApiResponse<bool>> DeleteAsync(Guid id)
     {
         var request = new DeleteRelayProxy
@@ -63,27 +70,29 @@ public class RelayProxyController : ApiControllerBase
         return Ok(success);
     }
 
-    [HttpGet("{relayProxyId:guid}/agent-status")]
-    public async Task<ApiResponse<AgentStatus>> GetAgentStatusAsync(Guid relayProxyId, string host)
+    [HttpGet("agent-availability")]
+    [Authorize(Permissions.ManageRelayProxies)]
+    public async Task<ApiResponse<HttpStatusCode>> CheckAgentAvailabilityAsync(string agentHost)
     {
-        var request = new GetAgentStatus
+        var request = new CheckAgentAvailability
         {
-            RelayProxyId = relayProxyId,
-            Host = host
+            Host = agentHost
         };
 
-        var status = await Mediator.Send(request);
-        return Ok(status);
+        var statusCode = await Mediator.Send(request);
+        return Ok(statusCode);
     }
 
-    [HttpPut("{relayProxyId:guid}/agents/{agentId}/sync")]
-    public async Task<ApiResponse<SyncResult>> SyncToAgentAsync(Guid relayProxyId, string agentId)
+    [HttpPut("{rpId:guid}/agents/{agentId}/sync")]
+    [Authorize(Permissions.ManageRelayProxies)]
+    public async Task<ApiResponse<SyncResult>> SyncToAgentAsync(Guid rpId, string agentId, string host)
     {
         var request = new SyncToAgent
         {
             WorkspaceId = WorkspaceId,
-            RelayProxyId = relayProxyId,
-            AgentId = agentId
+            RelayProxyId = rpId,
+            AgentId = agentId,
+            Host = host
         };
 
         var syncResult = await Mediator.Send(request);

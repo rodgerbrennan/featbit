@@ -1,4 +1,6 @@
 using Domain;
+using Domain.Secrets;
+using Domain.Messages;
 using Infrastructure;
 using Infrastructure.Persistence;
 using Infrastructure.Persistence.MongoDb;
@@ -8,6 +10,7 @@ using Microsoft.Extensions.Internal;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Streaming.Connections;
+using Streaming.Consumers;
 using Streaming.Messages;
 using Streaming.Services;
 using Streaming.Metrics;
@@ -28,6 +31,9 @@ public static class StreamingServiceCollectionExtensions
         // system clock
         services.AddSingleton<ISystemClock, SystemClock>();
 
+        // Secret lookup cache
+        services.AddSingleton<SecretCache>();
+
         // request validator
         services.AddSingleton<IRequestValidator, RequestValidator>();
 
@@ -37,21 +43,31 @@ public static class StreamingServiceCollectionExtensions
         // services
         services
             .AddEvaluator()
-            .AddTransient<IDataSyncService, DataSyncService>();
-        if (options.SupportedTypes.Contains(ConnectionType.RelayProxy))
-        {
-            services.AddTransient<IRelayProxyService, RelayProxyService>();
-        }
+            .AddTransient<IDataSyncService, DataSyncService>()
+            .AddTransient<IAdminService, AdminService>();
+
+        var rpServiceType = options.CustomRpService != null
+            ? options.CustomRpService.GetType()
+            : typeof(RelayProxyService);
+
+        services.AddTransient(typeof(IRelayProxyService), rpServiceType);
 
         // connection
-        services.AddSingleton<IConnectionManager, ConnectionManager>();
+        services.AddSingleton<IConnectionManager, DefaultConnectionManager>();
 
         // message handlers
         services
             .AddSingleton<MessageDispatcher>()
             .AddTransient<IMessageHandler, PingMessageHandler>()
             .AddTransient<IMessageHandler, EchoMessageHandler>()
-            .AddTransient<IMessageHandler, DataSyncMessageHandler>();
+            .AddTransient<IMessageHandler, DataSyncMessageHandler>()
+            .AddTransient<IMessageHandler, RpAgentStatusMessageHandler>();
+
+        // mq message consumers
+        services
+            .AddSingleton<IMessageConsumer, FeatureFlagChangeMessageConsumer>()
+            .AddSingleton<IMessageConsumer, SegmentChangeMessageConsumer>()
+            .AddSingleton<IMessageConsumer, ControlPlaneCommandMessageConsumer>();
 
         return new StreamingBuilder(services);
     }

@@ -1,0 +1,50 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Testing;
+
+namespace Streaming.UnitTests;
+
+public class StreamingLoggingExtensionsTests
+{
+    private readonly FakeLogger _logger = new();
+
+    [Fact]
+    public void RequestRejected_FormatsMessageAndCarriesEventName()
+    {
+        _logger.RequestRejected("missing-type");
+
+        var record = Assert.Single(_logger.Collector.GetSnapshot());
+        Assert.Equal(LogLevel.Warning, record.Level);
+        Assert.Equal(1, record.Id.Id);
+        Assert.Equal("RequestRejected", record.Id.Name);
+        Assert.Equal("Streaming request was rejected. Reason: missing-type.", record.Message);
+    }
+
+    [Fact]
+    public void FailedToResolveHost_FormatsMessageAndCapturesException()
+    {
+        var ex = new InvalidOperationException("dns down");
+
+        _logger.FailedToResolveHost("10.0.0.1", ex);
+
+        var record = Assert.Single(_logger.Collector.GetSnapshot());
+        Assert.Equal(LogLevel.Debug, record.Level);
+        Assert.Equal(2, record.Id.Id);
+        Assert.Equal("FailedToResolveHost", record.Id.Name);
+        Assert.Equal("Failed to resolve host for IP address: 10.0.0.1.", record.Message);
+        Assert.Same(ex, record.Exception);
+    }
+
+    [Fact]
+    public void RequestValidationUnavailable_CapturesException()
+    {
+        var exception = new InvalidOperationException("lookup failed");
+        var logger = new FakeLogger();
+
+        logger.RequestValidationUnavailable("unavailable", exception);
+
+        var record = Assert.Single(logger.Collector.GetSnapshot());
+        Assert.Equal(LogLevel.Error, record.Level);
+        Assert.Same(exception, record.Exception);
+        Assert.Equal("RequestValidationUnavailable", record.Id.Name);
+    }
+}

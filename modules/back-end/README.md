@@ -33,6 +33,8 @@ requests, and that it can connect to its dependencies (a database, message queue
 
 ## Environment Variables
 
+Configuration uses the standard .NET environment-variable format: use `__` for nested keys.
+
 ### General
 
 | Name            | Description                                                                 | Default Value |
@@ -41,6 +43,8 @@ requests, and that it can connect to its dependencies (a database, message queue
 | `DbProvider`    | Database provider, used to select **MongoDB** or **Postgres**               | `"Postgres"`  |
 | `MqProvider`    | Message Queue provider, used to select **Redis**, **Kafka** or **Postgres** | `"Postgres"`  |
 | `CacheProvider` | Cache provider, used to select **Redis** or **None**                        | `"None"`      |
+| `OLAPProvider`  | Insights query store: **MongoDb**, **Postgres**, or **ClickHouse**. Defaults to the selected `DbProvider` when unset. ClickHouse requires `MqProvider=Kafka`. | Same as `DbProvider` |
+| `SSOEnabled`    | Enable the SSO endpoint. | `false` (unset) |
 
 ## Logging
 
@@ -51,11 +55,35 @@ requests, and that it can connect to its dependencies (a database, message queue
 
 ### JWT
 
-| Name            | Description     | Default Value            |
-|-----------------|-----------------|--------------------------|
-| `Jwt__Issuer`   | JWT Issuer Name | `"featbit"`              |
-| `Jwt__Audience` | JWT Audience    | `"featbit-api"`          |
-| `Jwt__Key`      | JWT Private Key | `"featbit-identity-key"` |
+JWT (JSON Web Token) configuration for authentication and authorization.
+
+| Name                  | Description                                                                            | Default Value                                           |
+|-----------------------|----------------------------------------------------------------------------------------|---------------------------------------------------------|
+| `Jwt__Issuer`         | JWT Issuer Name                                                                        | `"featbit"`                                             |
+| `Jwt__Audience`       | JWT Audience                                                                           | `"featbit-api"`                                         |
+| `Jwt__Algorithm`      | Signing algorithm. Valid values: `HS256` (symmetric), `RS256` or `ES256` (asymmetric)  | `"HS256"`                                               |
+| `Jwt__Key`            | Symmetric secret key — used when `Jwt__Algorithm = HS256`                              | `"featbit-identity-key-must-longer-than-32-characters"` |
+| `Jwt__PrivateKeyPath` | Path to a PEM-encoded private key file — used when `Jwt__Algorithm = RS256` or `ES256` | `""`                                                    |
+| `Jwt__PublicKeyPath`  | Path to a PEM-encoded public key file — used when `Jwt__Algorithm = RS256` or `ES256`  | `""`                                                    |
+
+> [!IMPORTANT]
+> **Security Notice**: Configure JWT signing according to your security requirements.
+>
+> **HS256 (default — symmetric)**
+> - You must change `Jwt__Key` to a secure, randomly generated secret.
+> - **Recommended length**: 64 characters (32 characters minimum)
+> - **Generation**: Use a cryptographically secure random generator or tools like [JWT Secrets](https://jwtsecrets.com/)
+> - **Storage**: Keep this key secret and never commit it to version control
+> - This key must remain consistent across all API instances.
+>
+> **RS256 / ES256 (asymmetric — recommended for production)**
+> - Set `Jwt__Algorithm` to `RS256` or `ES256`.
+> - Generate a key pair and provide paths to the PEM files via `Jwt__PrivateKeyPath` and `Jwt__PublicKeyPath`.
+> - The private key file must be kept secret; only the public key is needed for token validation.
+> - In Docker/Kubernetes deployments, mount the key files as secrets and set the paths accordingly.
+> - Example key generation:
+>   - **RS256**: `openssl genrsa -out jwt-rs-private.pem 2048 && openssl rsa -in jwt-rs-private.pem -pubout -out jwt-rs-public.pem`
+>   - **ES256**: `openssl ecparam -name prime256v1 -genkey -noout -out jwt-es-private.pem && openssl ec -in jwt-es-private.pem -pubout -out jwt-es-public.pem`
 
 ### MongoDB
 
@@ -68,15 +96,19 @@ requests, and that it can connect to its dependencies (a database, message queue
 
 | Name                         | Description                                                                                      | Default Value                                                                            |
 |------------------------------|--------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------|
-| `Postgres__ConnectionString` | Postgres connection string                                                                       | `"Host=postgres;Port=5432;Username=postgres;Password=please_change_me;Database=featbit"` |
+| `Postgres__ConnectionString` | Postgres connection string                                                                       | `"Host=postgresql;Port=5432;Username=postgres;Password=please_change_me;Database=featbit"` |
 | `Postgres__Password`         | Postgres password (Optional). If provided, override the password specified in connection string. | `""`                                                                                     |
 
 ### Redis
 
-| Name                      | Description                                                                                  | Default Value  |
-|---------------------------|----------------------------------------------------------------------------------------------|----------------|
-| `Redis__ConnectionString` | Redis Connection String                                                                      | `"redis:6379"` |
-| `Redis__Password`         | Redis Password (Optional). If provided, override the password specified in connection string | `""`           |
+| Name                            | Description                                                                                                                                                                                                               | Default Value  |
+|---------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------|
+| `Redis__ConnectionString`       | Redis Connection String                                                                                                                                                                                                   | `"redis:6379"` |
+| `Redis__Password`               | Redis Password (Optional). If provided, override the password specified in connection string                                                                                                                              | `""`           |
+| `Redis__PopulateLockTtlSeconds` | Lock TTL (seconds) for the startup Redis populate. Must exceed the expected populate duration; if the lock expires mid-populate a second instance can start a concurrent populate. Increase for large datasets.           | `60`           |
+| `Redis__PopulateMaxWaitSeconds` | Maximum seconds an instance will wait for another instance to finish populating Redis before throwing. Should be comfortably larger than `PopulateLockTtlSeconds` so a crashed instance's lock can expire and be retaken. | `90`           |
+| `Redis__ConnectTimeoutMs` | Redis connection timeout in milliseconds; an explicit `connectTimeout` in the connection string takes precedence. | `1500` |
+| `Redis__SyncTimeoutMs` | Redis synchronous command timeout in milliseconds; an explicit `syncTimeout` in the connection string takes precedence. | `1500` |
 
 ### Kafka
 
@@ -94,8 +126,37 @@ and [consumer configs](https://kafka.apache.org/documentation/#consumerconfigs) 
 | `Kafka__Consumer__auto.commit.interval.ms`  | The frequency in ms that the consumer offsets are auto-committed to Kafka           | `"5000"`        |
 | `Kafka__Consumer__enable.auto.offset.store` | Whether to automatically store the offset of the last message prior to calling poll | `false`         |
 
-### OLAP
+### ClickHouse
 
-| Name                | Description                       | Default Value        |
-|---------------------|-----------------------------------|----------------------|
-| `OLAP__ServiceHost` | URI for the data analytics server | `"http://da-server"` |
+Set `OLAPProvider=ClickHouse` only with `MqProvider=Kafka`. In that mode the API queries ClickHouse
+for insights, and `ClickHouse__HttpEndpoint` is required. When `OLAPProvider` is unset, insights use `DbProvider`.
+
+| Name | Description | Default Value |
+|------|-------------|---------------|
+| `ClickHouse__HttpEndpoint` | ClickHouse HTTP URL (for example, `http://clickhouse-server:8123`); required with ClickHouse OLAP. | None |
+| `ClickHouse__Database` | ClickHouse database name. | `featbit` |
+| `ClickHouse__User` | ClickHouse user. | `default` |
+| `ClickHouse__Password` | ClickHouse password. | Empty |
+
+### UsageTracking
+
+| Name                             | Description                                            | Default Value |
+|----------------------------------|--------------------------------------------------------|---------------|
+| `UsageTracking__FlushIntervalMs` | Interval in milliseconds between usage data flushes    | `5000`        |
+| `UsageTracking__ChannelCapacity` | Maximum number of usage events buffered in the channel | `10000`       |
+
+### InsightsTracking
+
+| Name | Description | Default Value |
+|------|-------------|---------------|
+| `InsightsTracking__FlushIntervalMs` | Interval in milliseconds between insight event flushes (1–30000). | `1000` |
+| `InsightsTracking__ChannelCapacity` | Maximum number of insight events buffered in the channel (1–100000). | `10000` |
+| `InsightsTracking__MaxBatchSize` | Maximum events per flush (1–10000); cannot exceed channel capacity. | `1000` |
+
+### OAuth integrations
+
+| Name | Description | Default Value |
+|------|-------------|---------------|
+| `OAuthProviders__<index>__Name` | Social login provider name (`Google` or `GitHub`). Configure each provider as an indexed array entry. | None |
+| `OAuthProviders__<index>__ClientId` | OAuth client ID for the indexed provider. | None |
+| `OAuthProviders__<index>__ClientSecret` | OAuth client secret for the indexed provider. | None |

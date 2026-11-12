@@ -1,19 +1,18 @@
-using Newtonsoft.Json;
 using System.Text.Json;
 using Api.Authentication;
-using Api.Authorization;
-using Api.Swagger.Examples;
+using Api.Setup.OpenApi;
+using Api.Setup.OpenApi.Examples;
+using Application.AuditLogs;
 using Application.Bases.Models;
 using Application.FeatureFlags;
 using Domain.Workspaces;
 using Domain.FeatureFlags;
-using Microsoft.AspNetCore.JsonPatch;
-using Microsoft.AspNetCore.JsonPatch.Operations;
-using Swashbuckle.AspNetCore.Filters;
+using Domain.Policies;
+using Microsoft.AspNetCore.JsonPatch.SystemTextJson;
+using Microsoft.AspNetCore.JsonPatch.SystemTextJson.Operations;
 
 namespace Api.Controllers;
 
-[Authorize(Permissions.ManageFeatureFlag)]
 [Route("api/v{version:apiVersion}/envs/{envId:guid}/feature-flags")]
 public class FeatureFlagController : ApiControllerBase
 {
@@ -25,12 +24,14 @@ public class FeatureFlagController : ApiControllerBase
     /// </remarks>
     [OpenApi]
     [HttpGet]
+    [Authorize(Permissions.CanAccessEnv)]
     public async Task<ApiResponse<PagedResult<FeatureFlagVm>>> GetListAsync(
         Guid envId,
         [FromQuery] FeatureFlagFilter filter)
     {
         var request = new GetFeatureFlagList
         {
+            WorkspaceId = WorkspaceId,
             EnvId = envId,
             Filter = filter
         };
@@ -47,12 +48,52 @@ public class FeatureFlagController : ApiControllerBase
     /// </remarks>
     [OpenApi]
     [HttpGet("{key}")]
+    [Authorize(Permissions.CanAccessEnv)]
     public async Task<ApiResponse<FeatureFlag>> GetAsync(Guid envId, string key)
     {
         var request = new GetFeatureFlag
         {
             EnvId = envId,
             Key = key
+        };
+
+        var flag = await Mediator.Send(request);
+        return Ok(flag);
+    }
+
+    /// <summary>
+    /// Get the running experiments of a feature flag
+    /// </summary>
+    /// <remarks>
+    /// Experiments bound to the flag with a run whose observation window has not ended. Insights cannot be
+    /// disabled on the flag while this list is non-empty.
+    /// </remarks>
+    [HttpGet("{key}/running-experiments")]
+    [Authorize(Permissions.CanAccessEnv)]
+    public async Task<ApiResponse<IReadOnlyList<ExperimentReference>>> GetRunningExperimentsAsync(Guid envId, string key)
+    {
+        var request = new GetRunningExperiments
+        {
+            EnvId = envId,
+            Key = key
+        };
+
+        var experiments = await Mediator.Send(request);
+        return Ok(experiments);
+    }
+
+    /// <summary>
+    /// Get a feature flag by id within an environment
+    /// </summary>
+    [OpenApi]
+    [HttpGet("by-id/{id:guid}")]
+    [Authorize(Permissions.CanAccessEnv)]
+    public async Task<ApiResponse<FeatureFlag>> GetByIdAsync(Guid envId, Guid id)
+    {
+        var request = new GetFeatureFlagById
+        {
+            EnvId = envId,
+            Id = id
         };
 
         var flag = await Mediator.Send(request);
@@ -80,9 +121,10 @@ public class FeatureFlagController : ApiControllerBase
     /// </remarks>
     [OpenApi]
     [HttpPost]
-    public async Task<ApiResponse<FeatureFlag>> CreateAsync(Guid envId, CreateFeatureFlag request)
+    [Authorize(Permissions.CreateFlag)]
+    public async Task<ApiResponse<FeatureFlag>> CreateAsync(Guid envId, CreateFeatureFlagPayload payload)
     {
-        request.EnvId = envId;
+        var request = new CreateFeatureFlag(WorkspaceId, OrgId, envId, payload);
 
         var flag = await Mediator.Send(request);
         return Ok(flag);
@@ -91,14 +133,25 @@ public class FeatureFlagController : ApiControllerBase
     /// <summary>
     /// Archive a feature flag
     /// </summary>
+    /// <remarks>
+    /// Archive a feature flag with the specified key. Archived flags are hidden from the main list by default
+    /// but can be restored later.
+    /// </remarks>
     [OpenApi]
     [HttpPut("{key}/archive")]
-    public async Task<ApiResponse<bool>> ArchiveAsync(Guid envId, string key)
+    [Authorize(Permissions.ArchiveFlag)]
+    public async Task<ApiResponse<bool>> ArchiveAsync(
+        Guid envId,
+        string key,
+        [FromBody] ResourceChangeRequest? changeRequest = null)
     {
         var request = new ArchiveFeatureFlag
         {
+            WorkspaceId = WorkspaceId,
+            OrgId = OrgId,
             EnvId = envId,
-            Key = key
+            Key = key,
+            Comment = changeRequest?.Comment ?? string.Empty
         };
 
         var success = await Mediator.Send(request);
@@ -108,16 +161,26 @@ public class FeatureFlagController : ApiControllerBase
     /// <summary>
     /// Restore a feature flag
     /// </summary>
+    /// <remarks>
+    /// Restore an archived feature flag with the specified key, making it visible and usable again.
+    /// </remarks>
     [OpenApi]
     [HttpPut("{key}/restore")]
-    public async Task<ApiResponse<bool>> RestoreAsync(Guid envId, string key)
+    [Authorize(Permissions.RestoreFlag)]
+    public async Task<ApiResponse<bool>> RestoreAsync(
+        Guid envId,
+        string key,
+        [FromBody] ResourceChangeRequest? changeRequest = null)
     {
         var request = new RestoreFeatureFlag
         {
             EnvId = envId,
-            Key = key
+            Key = key,
+            Comment = changeRequest?.Comment ?? string.Empty
         };
 
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
         var success = await Mediator.Send(request);
         return Ok(success);
     }
@@ -125,74 +188,212 @@ public class FeatureFlagController : ApiControllerBase
     /// <summary>
     /// Delete a feature flag
     /// </summary>
+    /// <remarks>
+    /// Permanently delete a feature flag with the specified key. This action cannot be undone.
+    /// </remarks>
     [OpenApi]
     [HttpDelete("{key}")]
-    public async Task<ApiResponse<bool>> DeleteAsync(Guid envId, string key)
+    [Authorize(Permissions.DeleteFlag)]
+    public async Task<ApiResponse<bool>> DeleteAsync(
+        Guid envId,
+        string key,
+        [FromBody] ResourceChangeRequest? changeRequest = null)
     {
         var request = new DeleteFeatureFlag
         {
             EnvId = envId,
-            Key = key
+            Key = key,
+            Comment = changeRequest?.Comment ?? string.Empty
         };
 
-        var success = await Mediator.Send(request);
-        return Ok(success);
-    }
-
-    [HttpPut("{key}/toggle")]
-    public async Task<ApiResponse<bool>> ToggleAsync(Guid envId, string key)
-    {
-        var request = new ToggleFeatureFlag
-        {
-            EnvId = envId,
-            Key = key
-        };
-
-        var success = await Mediator.Send(request);
-        return Ok(success);
-    }
-
-    [HttpPut("{key}/settings")]
-    public async Task<ApiResponse<bool>> UpdateSettingAsync(Guid envId, string key, UpdateSetting request)
-    {
-        request.Key = key;
-        request.EnvId = envId;
-
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
         var success = await Mediator.Send(request);
         return Ok(success);
     }
 
     /// <summary>
-    /// Update a feature flag with the JSON patch method
+    /// Toggle a feature flag on or off
     /// </summary>
     /// <remarks>
-    /// Perform a partial update to a feature flag. The request body must be a valid JSON patch.
+    /// Enable or disable a feature flag.
     /// </remarks>
     [OpenApi]
-    [SwaggerRequestExample(typeof(Operation), typeof(PatchFeatureFlagExamples))]
-    [HttpPatch("{key}")]
-    public async Task<ApiResponse<bool>> PatchAsync(Guid envId, string key, [FromBody] JsonElement jsonElement)
+    [HttpPut("{key}/toggle/{status}")]
+    [Authorize(Permissions.ToggleFlag)]
+    public async Task<ApiResponse<Guid>> ToggleAsync(
+        Guid envId,
+        string key,
+        bool status,
+        [FromBody] ResourceChangeRequest? changeRequest = null)
     {
-        var patch = JsonConvert.DeserializeObject<JsonPatchDocument>(jsonElement.GetRawText());
-        var request = new PatchFeatureFlag
+        var request = new ToggleFeatureFlag
         {
             EnvId = envId,
             Key = key,
-            Patch = patch
+            Status = status,
+            Comment = changeRequest?.Comment ?? string.Empty
         };
 
-        var result = await Mediator.Send(request);
-        return result.Success ? Ok(true) : Error<bool>(result.Message);
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
+        var revision = await Mediator.Send(request);
+        return Ok(revision);
     }
 
-    [HttpPut("{key}/variations")]
-    public async Task<ApiResponse<bool>> UpdateVariationsAsync(Guid envId, string key, UpdateVariations request)
+    /// <summary>
+    /// Update the name of a feature flag
+    /// </summary>
+    /// <remarks>
+    /// Update the display name of an existing feature flag.
+    /// </remarks>
+    [OpenApi]
+    [HttpPut("{key}/name")]
+    [Authorize(Permissions.UpdateFlagName)]
+    public async Task<ApiResponse<Guid>> UpdateNameAsync(Guid envId, string key, UpdateName request)
     {
         request.Key = key;
         request.EnvId = envId;
 
-        var success = await Mediator.Send(request);
-        return Ok(success);
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
+        var revision = await Mediator.Send(request);
+        return Ok(revision);
+    }
+
+    /// <summary>
+    /// Update the description of a feature flag
+    /// </summary>
+    /// <remarks>
+    /// Update the description field of a feature flag to provide additional context and documentation.
+    /// </remarks>
+    [OpenApi]
+    [HttpPut("{key}/description")]
+    [Authorize(Permissions.UpdateFlagDescription)]
+    public async Task<ApiResponse<Guid>> UpdateDescriptionAsync(Guid envId, string key, UpdateDescription request)
+    {
+        request.Key = key;
+        request.EnvId = envId;
+
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
+        var revision = await Mediator.Send(request);
+        return Ok(revision);
+    }
+
+    /// <summary>
+    /// Update the general information of a feature flag
+    /// </summary>
+    /// <remarks>
+    /// Update the name, description, and tags of a feature flag in a single operation.
+    /// Permissions are checked for each field that is changed.
+    /// </remarks>
+    [OpenApi]
+    [HttpPut("{key}/general")]
+    public async Task<ApiResponse<Guid>> UpdateGeneralAsync(
+        Guid envId,
+        string key,
+        UpdateGeneralPayload payload)
+    {
+        var permissions = await GetRequestPermissionsAsync();
+        var request = new UpdateGeneral(envId, key, payload, permissions);
+
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
+        var revision = await Mediator.Send(request);
+        return Ok(revision);
+    }
+
+    /// <summary>
+    /// Enable or disable insight collection for a feature flag
+    /// </summary>
+    [OpenApi]
+    [HttpPut("{key}/insight-collection")]
+    [Authorize(Permissions.CanAccessEnv)]
+    public async Task<ApiResponse<Guid>> UpdateInsightCollectionAsync(Guid envId, string key, UpdateInsightCollectionPayload payload)
+    {
+        var request = new UpdateInsightCollection
+        {
+            EnvId = envId,
+            Key = key,
+            Enabled = payload.Enabled,
+            Comment = payload.Comment
+        };
+
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
+        return Ok(await Mediator.Send(request));
+    }
+
+    /// <summary>
+    /// Update the off variation of a feature flag
+    /// </summary>
+    /// <remarks>
+    /// Set which variation should be served when the feature flag is disabled (off).
+    /// </remarks>
+    [OpenApi]
+    [HttpPut("{key}/off-variation")]
+    [Authorize(Permissions.UpdateFlagOffVariation)]
+    public async Task<ApiResponse<Guid>> UpdateOffVariationAsync(Guid envId, string key, UpdateOffVariation request)
+    {
+        request.Key = key;
+        request.EnvId = envId;
+
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
+        var revision = await Mediator.Send(request);
+        return Ok(revision);
+    }
+
+    /// <summary>
+    /// Update a feature flag with the JSON patch method.
+    /// </summary>
+    /// <remarks>
+    /// Use with caution as this can make arbitrary changes to the feature flag, incorrect usage may lead to malformed data.
+    /// Perform a partial update to a feature flag. The request body must be a valid JSON patch.
+    /// </remarks>
+    [OpenApi]
+    [OpenApiRequestExamples(typeof(PatchFeatureFlagExamples))]
+    [HttpPatch("{key}")]
+    public async Task<ApiResponse<bool>> PatchAsync(Guid envId, string key, [FromBody] JsonElement jsonElement)
+    {
+        var patch = JsonSerializer.Deserialize<JsonPatchDocument<FeatureFlag>>(
+            jsonElement.GetRawText(),
+            JsonSerializerOptions.Web
+        );
+
+        var request = new PatchFeatureFlag
+        {
+            EnvId = envId,
+            Key = key,
+            Patch = patch,
+            Permissions =  await GetRequestPermissionsAsync()
+        };
+
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
+        var result = await Mediator.Send(request);
+        return result.Success ? Ok(true) : Error<bool>(result.Message);
+    }
+
+    /// <summary>
+    /// Update the variations of a feature flag
+    /// </summary>
+    /// <remarks>
+    /// Update the list of possible variations (different return values) for a feature flag.
+    /// </remarks>
+    [OpenApi]
+    [HttpPut("{key}/variations")]
+    [Authorize(Permissions.UpdateFlagVariations)]
+    public async Task<ApiResponse<Guid>> UpdateVariationsAsync(Guid envId, string key, UpdateVariations request)
+    {
+        request.Key = key;
+        request.EnvId = envId;
+
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
+        var revision = await Mediator.Send(request);
+        return Ok(revision);
     }
 
     /// <summary>
@@ -201,11 +402,13 @@ public class FeatureFlagController : ApiControllerBase
     /// <remarks>
     /// Get the list of pending changes of a particular flag
     /// </remarks>
+    [OpenApi]
     [HttpGet("{key}/pending-changes")]
     public async Task<ApiResponse<IEnumerable<PendingChangesVm>>> GetPendingChangesAsync(Guid envId, string key)
     {
         var request = new GetPendingChanges
         {
+            OrgId = OrgId,
             EnvId = envId,
             Key = key
         };
@@ -227,9 +430,6 @@ public class FeatureFlagController : ApiControllerBase
         return Ok(success);
     }
 
-    /// <summary>
-    /// Delete a flag schedule
-    /// </summary>
     [Authorize(LicenseFeatures.Schedule)]
     [HttpDelete("schedules/{id:guid}")]
     public async Task<ApiResponse<bool>> DeleteScheduleAsync(Guid id)
@@ -243,88 +443,23 @@ public class FeatureFlagController : ApiControllerBase
         return Ok(success);
     }
 
-    [Authorize(LicenseFeatures.ChangeRequest)]
-    [HttpPost("{key}/change-requests")]
-    public async Task<ApiResponse<bool>> CreateChangeRequestAsync(Guid envId, string key, CreateFlagChangeRequest request)
-    {
-        request.OrgId = OrgId;
-        request.Key = key;
-        request.EnvId = envId;
-
-        var success = await Mediator.Send(request);
-        return Ok(success);
-    }
-
-    [Authorize(LicenseFeatures.ChangeRequest)]
-    [HttpPut("change-requests/{id:guid}/approve")]
-    public async Task<ApiResponse<bool>> ApproveChangeRequestAsync(Guid envId, Guid id)
-    {
-        var request = new ApproveFlagChangeRequest
-        {
-            OrgId = OrgId,
-            EnvId = envId,
-            Id = id
-        };
-
-        var success = await Mediator.Send(request);
-        return Ok(success);
-    }
-
-    [Authorize(LicenseFeatures.ChangeRequest)]
-    [HttpPut("change-requests/{id:guid}/decline")]
-    public async Task<ApiResponse<bool>> DeclineChangeRequestAsync(Guid envId, Guid id)
-    {
-        var request = new DeclineFlagChangeRequest
-        {
-            OrgId = OrgId,
-            EnvId = envId,
-            Id = id
-        };
-
-        var success = await Mediator.Send(request);
-        return Ok(success);
-    }
-
-    [Authorize(LicenseFeatures.ChangeRequest)]
-    [HttpPut("change-requests/{id:guid}/apply")]
-    public async Task<ApiResponse<bool>> ApplyChangeRequestAsync(Guid envId, Guid id)
-    {
-        var request = new ApplyFlagChangeRequest
-        {
-            OrgId = OrgId,
-            EnvId = envId,
-            Id = id
-        };
-
-        var success = await Mediator.Send(request);
-        return Ok(success);
-    }
-
     /// <summary>
-    /// Delete a flag change request
+    /// Update the targeting of a feature flag
     /// </summary>
-    [Authorize(LicenseFeatures.ChangeRequest)]
-    [HttpDelete("change-requests/{id:guid}")]
-    public async Task<ApiResponse<bool>> DeleteChangeRequestAsync(Guid id)
-    {
-        var request = new DeleteFlagChangeRequest
-        {
-            Id = id
-        };
-
-        var success = await Mediator.Send(request);
-        return Ok(success);
-    }
-
+    /// <remarks>
+    /// Update the off variation, targeting users, rules and default rule of a feature flag.
+    /// </remarks>
+    [OpenApi]
     [HttpPut("{key}/targeting")]
-    public async Task<ApiResponse<bool>> UpdateTargetingAsync(Guid envId, string key, UpdateTargeting request)
+    public async Task<ApiResponse<Guid>> UpdateTargetingAsync(Guid envId, string key, UpdateTargetingPayload payload)
     {
-        request.OrgId = OrgId;
-        request.Key = key;
-        request.EnvId = envId;
+        var permissions = await GetRequestPermissionsAsync();
+        var request = new UpdateTargeting(OrgId, envId, key, payload, permissions);
 
-        var success = await Mediator.Send(request);
-        return Ok(success);
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
+        var revision = await Mediator.Send(request);
+        return Ok(revision);
     }
 
     [HttpPost("copy-to-env-precheck/{targetEnvId:guid}")]
@@ -342,17 +477,86 @@ public class FeatureFlagController : ApiControllerBase
         return Ok(results);
     }
 
-
     [HttpPost("copy-to-env/{targetEnvId:guid}")]
-    public async Task<ApiResponse<CopyToEnvResult>> CopyToEnvAsync(Guid targetEnvId, CopyToEnv request)
+    public async Task<ApiResponse<CopyToEnvResult>> CopyToEnvAsync(Guid envId, Guid targetEnvId, CopyToEnv request)
     {
+        request.SourceEnvId = envId;
         request.TargetEnvId = targetEnvId;
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
 
         var copyToEnvResult = await Mediator.Send(request);
         return Ok(copyToEnvResult);
     }
 
+    /// <summary>
+    /// Clone a feature flag
+    /// </summary>
+    /// <remarks>
+    /// Create a new feature flag by cloning an existing one with all its settings, variations, and targeting rules.
+    /// </remarks>
+    [OpenApi]
+    [HttpPost("clone/{key}")]
+    [Authorize(Permissions.CloneFlag)]
+    public async Task<ApiResponse<bool>> CloneAsync(Guid envId, string key, CloneFlagPayload payload)
+    {
+        payload.EnvId = envId;
+        payload.OriginFlagKey = key;
+
+        var request = new CloneFlag(WorkspaceId, OrgId, payload);
+
+        var flag = await Mediator.Send(request);
+        return Ok(flag);
+    }
+
+    [Authorize(LicenseFeatures.FlagComparison)]
+    [HttpPost("compare-overview")]
+    public async Task<ApiResponse<PagedResult<CompareFlagOverview>>> GetCompareOverviewAsync(Guid envId, GetCompareFlagOverview request)
+    {
+        request.SourceEnvId = envId;
+
+        var overview = await Mediator.Send(request);
+        return Ok(overview);
+    }
+
+    [Authorize(LicenseFeatures.FlagComparison)]
+    [HttpGet("{key}/compare-with/{targetEnvId:guid}")]
+    public async Task<ApiResponse<CompareFlagDetail>> CompareAsync(Guid envId, Guid targetEnvId, string key)
+    {
+        var request = new CompareFlag
+        {
+            Key = key,
+            SourceEnvId = envId,
+            TargetEnvId = targetEnvId
+        };
+
+        var diff = await Mediator.Send(request);
+        return Ok(diff);
+    }
+
+    [Authorize(LicenseFeatures.FlagComparison)]
+    [HttpPut("{key}/copy-settings-to/{targetEnvId:guid}")]
+    public async Task<ApiResponse<bool>> CopySettingsAsync(Guid envId, string key, Guid targetEnvId, CopyFlagSettings request)
+    {
+        request.Key = key;
+        request.SourceEnvId = envId;
+        request.TargetEnvId = targetEnvId;
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
+
+        var success = await Mediator.Send(request);
+        return Ok(success);
+    }
+
+    /// <summary>
+    /// Get all feature flag tags within an environment
+    /// </summary>
+    /// <remarks>
+    /// Retrieve all unique tags used across feature flags in the environment.
+    /// </remarks>
+    [OpenApi]
     [HttpGet("all-tags")]
+    [Authorize(Permissions.CanAccessEnv)]
     public async Task<ApiResponse<ICollection<string>>> GetAllTagsAsync(Guid envId)
     {
         var request = new GetAllTag
@@ -364,25 +568,30 @@ public class FeatureFlagController : ApiControllerBase
         return Ok(tags);
     }
 
+    /// <summary>
+    /// Set tags for a feature flag
+    /// </summary>
+    /// <remarks>
+    /// Assign a list of tags to a feature flag for organization and filtering purposes.
+    /// </remarks>
+    [OpenApi]
     [HttpPut("{key}/tags")]
-    public async Task<ApiResponse<bool>> SetTagsAsync(Guid envId, string key, string[] tags)
+    [Authorize(Permissions.UpdateFlagTags)]
+    public async Task<ApiResponse<bool>> SetTagsAsync(Guid envId, string key, SetTags request)
     {
-        var request = new SetTags
-        {
-            EnvId = envId,
-            Key = key,
-            Tags = tags
-        };
+        request.EnvId = envId;
+        request.Key = key;
 
+        request.WorkspaceId = WorkspaceId;
+        request.OrgId = OrgId;
         var success = await Mediator.Send(request);
         return Ok(success);
     }
 
     [HttpGet]
     [Route("insights")]
-    public async Task<ApiResponse<IEnumerable<InsightsVm>>> GetStatsByVariationAsync(
-        Guid envId,
-        [FromQuery] StatsByVariationFilter filter)
+    [Authorize(Permissions.CanAccessEnv)]
+    public async Task<ApiResponse<IEnumerable<InsightsVm>>> GetInsightsAsync(Guid envId, [FromQuery] InsightFilter filter)
     {
         var request = new GetInsights
         {

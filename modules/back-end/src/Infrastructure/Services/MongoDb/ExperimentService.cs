@@ -1,384 +1,1814 @@
+using Application.Bases;
+using Application.Bases.Exceptions;
 using Application.Bases.Models;
-using Application.ExperimentMetrics;
+using Application.ExperimentStats;
 using Application.Experiments;
-using Domain.ExperimentMetrics;
-using Domain.Experiments;
+using Application.Experiments.ExperimentMetrics;
+using Application.Services;
 using Domain.FeatureFlags;
-using Domain.Utils;
+using Domain.Experiments;
+using MongoDB.Bson;
 using MongoDB.Driver;
-using MongoDB.Driver.Linq;
+using System.Text.RegularExpressions;
+using System.Text.Json;
 
 namespace Infrastructure.Services.MongoDb;
 
-public class ExperimentService(MongoDbClient mongoDb, IOlapService olapService)
-    : MongoDbService<Experiment>(mongoDb), IExperimentService
+public class ExperimentService(
+    MongoDbClient mongoDb,
+    IExperimentStatsService statsService,
+    IFeatureFlagService featureFlagService,
+    IExperimentMetricService metricService)
+    : IExperimentService
 {
-    public async Task ArchiveExperiment(Guid envId, Guid experimentId)
+    private const double GuardrailHealthyHarmProbability = 0.01;
+    private const double GuardrailAlarmHarmProbability = 0.95;
+
+    public async Task<ExperimentVm> CreateAsync(Experiment experiment)
     {
-        var experiment = await GetAsync(experimentId);
+        var flag = await ExperimentFlagBinding.ValidateAsync(featureFlagService, experiment.EnvId, experiment.FlagId);
+        await mongoDb.CollectionOf<Experiment>().InsertOneAsync(experiment);
+        return ToVm(experiment, flag);
+    }
 
-        var operationTime = DateTime.UtcNow;
+    public async Task<ExperimentDetailVm> GetAsync(Guid envId, Guid id)
+    {
+        var experiment = await mongoDb.CollectionOf<Experiment>()
+            .Find(x => x.Id == id && x.EnvId == envId)
+            .FirstOrDefaultAsync();
 
-        var featureFlag = await MongoDb.QueryableOf<FeatureFlag>().FirstOrDefaultAsync(x => x.Id == experiment.FeatureFlagId);
-        var metric = await MongoDb.QueryableOf<ExperimentMetric>().FirstOrDefaultAsync(x => x.Id == experiment.MetricId);
-        if (featureFlag == null || metric == null)
+        if (experiment == null)
         {
-            return;
+            throw new EntityNotFoundException(nameof(Experiment), $"{envId}-{id}");
         }
 
-        // stop active iterations
-        foreach (var iteration in experiment.Iterations.Where(x => !x.EndTime.HasValue))
-        {
-            iteration.EndTime = operationTime;
-            iteration.IsFinish = true;
+        experiment.ExperimentRuns = await mongoDb.CollectionOf<ExperimentRun>()
+            .Find(x => x.ExperimentId == id)
+            .SortBy(x => x.CreatedAt)
+            .ToListAsync();
+        var flag = await ExperimentFlagBinding.FindAsync(featureFlagService, envId, experiment.FlagId);
+        return ToDetailVm(experiment, flag);
+    }
 
-            var param = new ExptIterationParam
+    public async Task<Guid> GetEnvIdAsync(Guid id)
+    {
+        var envId = await mongoDb.CollectionOf<Experiment>()
+            .Find(x => x.Id == id)
+            .Project(x => x.EnvId)
+            .FirstOrDefaultAsync();
+
+        if (!envId.HasValue)
+        {
+            throw new EntityNotFoundException(nameof(Experiment), id.ToString());
+        }
+
+        return envId.Value;
+    }
+
+    public async Task DeleteAsync(Guid envId, Guid id)
+    {
+        var result = await mongoDb.CollectionOf<Experiment>()
+            .DeleteOneAsync(x => x.Id == id && x.EnvId == envId);
+
+        if (result.DeletedCount == 0)
+        {
+            throw new EntityNotFoundException(nameof(Experiment), $"{envId}-{id}");
+        }
+
+        await mongoDb.CollectionOf<ExperimentRun>().DeleteManyAsync(x => x.ExperimentId == id);
+    }
+
+    public async Task<ExperimentDetailVm> UpdateAsync(
+        Guid envId,
+        Guid id,
+        ExperimentUpdate update)
+    {
+        update ??= new ExperimentUpdate();
+
+        var updates = new List<UpdateDefinition<Experiment>>
+        {
+            Builders<Experiment>.Update.Set(x => x.UpdatedAt, DateTime.UtcNow)
+        };
+
+        SetIfNotNull(updates, x => x.Name, update.Name);
+        SetIfNotNull(updates, x => x.Description, update.Description);
+        SetIfNotNull(updates, x => x.Stage, update.Stage);
+        if (update.FlagId.HasValue)
+        {
+            await ExperimentFlagBinding.ValidateAsync(featureFlagService, envId, update.FlagId);
+            updates.Add(Builders<Experiment>.Update.Set(x => x.FlagId, update.FlagId));
+        }
+        SetIfNotNull(updates, x => x.Hypothesis, update.Hypothesis);
+        SetIfNotNull(updates, x => x.Change, update.Change);
+        SetIfNotNull(updates, x => x.Constraints, update.Constraints);
+        SetIfNotNull(updates, x => x.Goal, update.Goal);
+        SetIfNotNull(updates, x => x.Intent, update.Intent);
+        SetIfNotNull(updates, x => x.LastAction, update.LastAction);
+        SetIfNotNull(updates, x => x.LastLearning, update.LastLearning);
+        SetIfNotNull(updates, x => x.ConflictAnalysis, update.ConflictAnalysis);
+
+        await mongoDb.CollectionOf<Experiment>().UpdateOneAsync(
+            x => x.Id == id && x.EnvId == envId,
+            Builders<Experiment>.Update.Combine(updates));
+
+        return await GetAsync(envId, id);
+    }
+
+    public async Task<ExperimentDetailVm> UpdateStageAsync(
+        Guid envId,
+        Guid id,
+        string stage)
+    {
+        return await UpdateAsync(envId, id, new ExperimentUpdate { Stage = stage });
+    }
+
+    public async Task<ExperimentDetailVm> UpdateMetricsAsync(
+        Guid envId,
+        Guid id,
+        ExperimentMetricsUpdate update)
+    {
+        var experiment = await GetExperimentAsync(envId, id);
+        var updatedAt = DateTime.UtcNow;
+        var primaryMetric = await ResolveMetricAsync(envId, update.PrimaryMetric.MetricId);
+        experiment.PrimaryMetric = BuildPrimaryMetricConfig(primaryMetric, update.PrimaryMetric.ExpectedDirection);
+        experiment.GuardrailMetrics = await BuildGuardrailMetricsConfigAsync(envId, update.GuardrailMetrics, primaryMetric);
+        experiment.UpdatedAt = updatedAt;
+
+        await mongoDb.CollectionOf<Experiment>().UpdateOneAsync(
+            x => x.Id == id && x.EnvId == envId,
+            Builders<Experiment>.Update
+                .Set(x => x.PrimaryMetric, experiment.PrimaryMetric)
+                .Set(x => x.GuardrailMetrics, experiment.GuardrailMetrics)
+                .Set(x => x.UpdatedAt, updatedAt));
+
+        return await GetAsync(envId, id);
+    }
+
+    public async Task<ExperimentDetailVm> CreateRunAsync(Guid envId, Guid id, ExperimentRunCreate setup)
+    {
+        ArgumentNullException.ThrowIfNull(setup);
+        var experiment = await GetExperimentAsync(envId, id);
+        var existingRuns = await mongoDb.CollectionOf<ExperimentRun>()
+            .Find(x => x.ExperimentId == id)
+            .SortBy(x => x.CreatedAt)
+            .ToListAsync();
+
+        var previous = existingRuns.LastOrDefault();
+
+        var now = DateTime.UtcNow;
+        var run = new ExperimentRun
+        {
+            Id = Guid.NewGuid(),
+            ExperimentId = id,
+            Method = setup.Method ?? "bayesian_ab",
+            PrimaryMetric = MetricSnapshots.Copy(experiment.PrimaryMetric),
+            GuardrailMetrics = MetricSnapshots.Copy(experiment.GuardrailMetrics),
+            ControlVariant = setup.ControlVariant,
+            TreatmentVariants =  setup.TreatmentVariants ?? [],
+            TrafficPercent = previous?.TrafficPercent ?? 100,
+            TrafficOffset = previous?.TrafficOffset ?? 0,
+            LayerId = previous?.LayerId,
+            LayerKey = previous?.LayerKey,
+            AllocationKeySelector = previous?.AllocationKeySelector ?? "user.keyId",
+            SliceStart = previous?.SliceStart ?? previous?.TrafficOffset ?? 0,
+            SliceEnd = previous?.SliceEnd ?? Math.Min(100, (previous?.TrafficOffset ?? 0) + (previous?.TrafficPercent ?? 100)),
+            AllocationPlan = previous?.AllocationPlan,
+            AssignmentUnitSelector = previous?.AssignmentUnitSelector ?? previous?.AllocationKeySelector ?? "user.keyId",
+            LayerTrafficPercent = previous?.LayerTrafficPercent ?? 100,
+            AnalysisSamplingPlan = previous?.AnalysisSamplingPlan,
+            MinimumSample = setup.MinimumSample,
+            PriorProper = previous?.PriorProper ?? false,
+            PriorMean = previous?.PriorMean,
+            PriorStddev = previous?.PriorStddev,
+            ObservationStart = setup.ObservationStart ?? now,
+            ObservationEnd = setup.ObservationEnd,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        if (string.IsNullOrWhiteSpace(run.PrimaryMetric?.EventName))
+        {
+            throw new BusinessException(ErrorCodes.Required("primaryMetric"));
+        }
+        var flag = await ExperimentFlagBinding.RequireAsync(featureFlagService, envId, experiment.FlagId);
+        run.Variations = RunVariationSnapshot.Copy(flag.Variations);
+        RunVariationSnapshot.ValidateSelection(run);
+
+        await NormalizeAndValidateLayerAssignmentAsync(envId, run);
+        var number = await AllocateRunNumberAsync(envId, experiment);
+        run.Slug = $"run-{number}";
+        await mongoDb.CollectionOf<ExperimentRun>().InsertOneAsync(run);
+
+        return await GetAsync(envId, id);
+    }
+
+    private async Task<int> AllocateRunNumberAsync(
+        Guid envId, Experiment experiment)
+    {
+        var experiments = mongoDb.CollectionOf<Experiment>();
+        var filter = Builders<Experiment>.Filter.Where(x => x.Id == experiment.Id && x.EnvId == envId);
+
+        // Reserve on the experiment document, independently of run deletion or insertion.
+        var allocated = await experiments.FindOneAndUpdateAsync(
+            filter,
+            Builders<Experiment>.Update.Inc(x => x.LastRunNumber, 1),
+            new FindOneAndUpdateOptions<Experiment> { ReturnDocument = ReturnDocument.After });
+
+        return allocated?.LastRunNumber
+            ?? throw new EntityNotFoundException(nameof(Experiment), $"{envId}-{experiment.Id}");
+    }
+
+    public async Task<ExperimentDetailVm> DeleteRunAsync(Guid envId, Guid id, Guid runId)
+    {
+        var experiment = await GetExperimentAsync(envId, id);
+
+        var run = await mongoDb.CollectionOf<ExperimentRun>()
+            .Find(x => x.Id == runId && x.ExperimentId == id)
+            .FirstOrDefaultAsync();
+        if (run == null)
+        {
+            throw new EntityNotFoundException(nameof(ExperimentRun), $"{id}-{runId}");
+        }
+
+        await mongoDb.CollectionOf<ExperimentRun>().DeleteOneAsync(x => x.Id == runId && x.ExperimentId == id);
+        return await GetAsync(envId, id);
+    }
+
+    public async Task<ExperimentDetailVm> UpdateRunAsync(
+        Guid envId,
+        Guid id,
+        Guid runId,
+        ExperimentRunUpdate update)
+    {
+        update ??= new ExperimentRunUpdate();
+        await EnsureExperimentExistsAsync(envId, id);
+        var run = await GetRunAsync(id, runId);
+
+        RunVariationSnapshot.EnsureSelectionCanChange(run, update.ControlVariant, update.TreatmentVariants);
+        var selection = RunVariationSnapshot.Selection(run);
+        ApplyRunUpdate(run, update);
+        await NormalizeAndValidateLayerAssignmentAsync(envId, run);
+        if (update.ControlVariant != null || update.TreatmentVariants != null)
+        {
+            RunVariationSnapshot.ValidateSelection(run);
+            RunVariationSnapshot.InvalidateChangedSelection(run, selection);
+        }
+        run.UpdatedAt = DateTime.UtcNow;
+
+        await mongoDb.CollectionOf<ExperimentRun>().ReplaceOneAsync(
+            x => x.Id == runId && x.ExperimentId == id,
+            run);
+        return await GetAsync(envId, id);
+    }
+
+    public async Task<ExperimentDetailVm> UpdateRunAudienceAsync(
+        Guid envId,
+        Guid id,
+        Guid runId,
+        ExperimentRunAudienceUpdate update)
+    {
+        update ??= new ExperimentRunAudienceUpdate();
+        await EnsureExperimentExistsAsync(envId, id);
+
+        var run = await GetRunAsync(id, runId);
+        RunVariationSnapshot.EnsureSelectionCanChange(run, update.ControlVariant, update.TreatmentVariants);
+        var selection = RunVariationSnapshot.Selection(run);
+        var sliceStart = Math.Clamp(update.SliceStart ?? update.TrafficOffset ?? 0, 0, 100);
+        var sliceEnd = Math.Clamp(
+            update.SliceEnd ?? Math.Min(
+                100,
+                sliceStart + (update.TrafficPercent ?? update.LayerTrafficPercent ?? run.LayerTrafficPercent ?? 100)),
+            0,
+            100);
+        if (sliceEnd <= sliceStart)
+        {
+            sliceEnd = Math.Min(100, sliceStart + 1);
+        }
+
+        run.TrafficPercent = Math.Clamp(update.TrafficPercent ?? sliceEnd - sliceStart, 1, 100);
+        run.TrafficOffset = (int)Math.Clamp(update.TrafficOffset ?? Math.Floor(sliceStart), 0, 99);
+        run.LayerId = update.LayerId;
+        run.LayerKey = Normalize(update.LayerKey, run.LayerKey);
+        run.AllocationKeySelector = Normalize(update.AllocationKeySelector, run.AllocationKeySelector) ?? "user.keyId";
+        run.SliceStart = sliceStart;
+        run.SliceEnd = sliceEnd;
+        run.AllocationPlan = Normalize(update.AllocationPlan);
+        if (update.ControlVariant != null) run.ControlVariant = update.ControlVariant;
+        run.TreatmentVariants = update.TreatmentVariants?.ToArray() ?? run.TreatmentVariants;
+        run.AssignmentUnitSelector = Normalize(update.AssignmentUnitSelector, run.AssignmentUnitSelector) ??
+                                     run.AllocationKeySelector ??
+                                     "user.keyId";
+        run.LayerTrafficPercent = Math.Clamp(sliceEnd - sliceStart, 0d, 100d);
+        run.AnalysisSamplingPlan = Normalize(update.AnalysisSamplingPlan);
+        run.Method = Normalize(update.Method, run.Method);
+        await NormalizeAndValidateLayerAssignmentAsync(envId, run);
+        if (update.ControlVariant != null || update.TreatmentVariants != null)
+        {
+            RunVariationSnapshot.ValidateSelection(run);
+            RunVariationSnapshot.InvalidateChangedSelection(run, selection);
+        }
+        run.UpdatedAt = DateTime.UtcNow;
+
+        await mongoDb.CollectionOf<ExperimentRun>().ReplaceOneAsync(
+            x => x.Id == runId && x.ExperimentId == id,
+            run);
+        return await GetAsync(envId, id);
+    }
+
+    public async Task<ExperimentDetailVm> UpdateRunObservationWindowAsync(
+        Guid envId,
+        Guid id,
+        Guid runId,
+        ExperimentRunObservationWindowUpdate update)
+    {
+        update ??= new ExperimentRunObservationWindowUpdate();
+        if (!update.ObservationStart.HasValue)
+        {
+            throw new BusinessException(ErrorCodes.Required("observationStart"));
+        }
+
+        await EnsureExperimentExistsAsync(envId, id);
+
+        var run = await GetRunAsync(id, runId);
+        run.ObservationStart = update.ObservationStart;
+        run.ObservationEnd = update.ObservationEnd;
+        await NormalizeAndValidateLayerAssignmentAsync(envId, run);
+        run.UpdatedAt = DateTime.UtcNow;
+
+        await mongoDb.CollectionOf<ExperimentRun>().ReplaceOneAsync(
+            x => x.Id == runId && x.ExperimentId == id,
+            run);
+        return await GetAsync(envId, id);
+    }
+
+    public async Task<ExperimentDetailVm> AnalyzeRunAsync(
+        Guid envId,
+        Guid id,
+        Guid runId,
+        ExperimentRunAnalyzeRequest request)
+    {
+        request ??= new ExperimentRunAnalyzeRequest();
+        var experiment = await GetExperimentAsync(envId, id);
+        var run = await GetRunAsync(id, runId);
+        var flag = await ExperimentFlagBinding.RequireAsync(featureFlagService, envId, experiment.FlagId);
+        var primarySnapshot = run.PrimaryMetric
+            ?? throw new BusinessException(ErrorCodes.Required("primaryMetric"));
+        var primaryMetricEvent = Normalize(primarySnapshot.EventName);
+
+        if (string.IsNullOrWhiteSpace(primaryMetricEvent))
+        {
+            throw new InvalidOperationException("Primary metric event is required before analysis.");
+        }
+
+        RunVariationSnapshot.ValidateSelection(run);
+        var now = DateTime.UtcNow;
+        var start = ExperimentRunAllocation.ObservationStart(run);
+        var end = run.ObservationEnd ?? now;
+        var startDate = DateOnly.FromDateTime(start).ToString("yyyy-MM-dd");
+        var endDate = DateOnly.FromDateTime(end).ToString("yyyy-MM-dd");
+        var metricType = primarySnapshot.MetricType;
+        var metricAgg = primarySnapshot.MetricAgg;
+
+        var stats = await statsService.QueryAsync(new QueryExperimentStats
+        {
+            RunId = run.Id,
+            EnvId = envId,
+            FlagKey = flag.Key,
+            MetricEvent = primaryMetricEvent,
+            StartDate = startDate,
+            EndDate = endDate,
+            StartTime = start,
+            EndTime = end,
+            MetricType = metricType,
+            MetricAgg = metricAgg,
+            TrafficPercent = run.TrafficPercent,
+            TrafficOffset = run.TrafficOffset,
+            LayerId = run.LayerId?.ToString("D"),
+            ControlVariant = run.ControlVariant,
+            TreatmentVariants = run.TreatmentVariants,
+            LayerKey = run.LayerKey,
+            AllocationKeySelector = run.AllocationKeySelector,
+            SliceStart = run.SliceStart,
+            SliceEnd = run.SliceEnd,
+            AllocationPlan = run.AllocationPlan,
+            AssignmentUnitSelector = run.AssignmentUnitSelector,
+            LayerTrafficPercent = run.LayerTrafficPercent,
+            AnalysisSamplingPlan = run.AnalysisSamplingPlan
+        });
+
+        var variants = stats.Variants?.ToArray() ?? [];
+        var primaryMetricData = BuildMetricData(metricType, variants);
+        if (IsDecreaseGood(run.PrimaryMetric.ExpectedDirection))
+        {
+            primaryMetricData["inverse"] = true;
+        }
+
+        var metrics = new Dictionary<string, Dictionary<string, object>>
+        {
+            [MetricSnapshots.Identity(run.PrimaryMetric)] = primaryMetricData
+        };
+
+        var guardrails = run.GuardrailMetrics.Select(metric => new GuardrailDefinition(
+            metric.EventName, metric.MetricType, metric.MetricAgg,
+            metric.Direction == "increase_bad", MetricSnapshots.Identity(metric), metric.MetricId, metric.MetricKey)).ToList();
+        foreach (var guardrail in guardrails)
+        {
+            var guardrailStats = await statsService.QueryAsync(new QueryExperimentStats
             {
-                ExptId = experiment.Id,
-                IterationId = iteration.Id,
+                RunId = run.Id,
                 EnvId = envId,
-                FlagExptId = $"{envId}-{featureFlag.Key}",
-                BaselineVariationId = experiment.BaselineVariationId,
-                VariationIds = featureFlag.Variations.Select(x => x.Id),
-                EventName = metric.EventName,
-                EventType = (int)metric.EventType,
-                CustomEventTrackOption = (int)iteration.CustomEventTrackOption,
-                CustomEventSuccessCriteria = (int)iteration.CustomEventSuccessCriteria,
-                CustomEventUnit = iteration.CustomEventUnit,
-                StartExptTime = iteration.StartTime.ToUnixTimeMilliseconds(),
-                EndExptTime = iteration.EndTime?.ToUnixTimeMilliseconds()
-            };
+                FlagKey = flag.Key,
+                MetricEvent = guardrail.Event,
+                StartDate = startDate,
+                EndDate = endDate,
+                StartTime = start,
+                EndTime = end,
+                MetricType = guardrail.MetricType,
+                MetricAgg = guardrail.MetricAgg,
+                TrafficPercent = run.TrafficPercent,
+                TrafficOffset = run.TrafficOffset,
+                LayerId = run.LayerId?.ToString("D"),
+                ControlVariant = run.ControlVariant,
+                TreatmentVariants = run.TreatmentVariants,
+                LayerKey = run.LayerKey,
+                AllocationKeySelector = run.AllocationKeySelector,
+                SliceStart = run.SliceStart,
+                SliceEnd = run.SliceEnd,
+                AllocationPlan = run.AllocationPlan,
+                AssignmentUnitSelector = run.AssignmentUnitSelector,
+                LayerTrafficPercent = run.LayerTrafficPercent,
+                AnalysisSamplingPlan = run.AnalysisSamplingPlan
+            });
 
-            var olapExptResult = await olapService.GetExptIterationResultAsync(param);
-            if (olapExptResult != null)
+            var guardrailData = BuildMetricData(
+                guardrail.MetricType,
+                guardrailStats.Variants?.ToArray() ?? []);
+
+            if (guardrail.Inverse)
             {
-                iteration.Results = olapExptResult.Results;
-                iteration.UpdatedAt = olapExptResult.UpdatedAt;
+                guardrailData["inverse"] = true;
             }
+
+            metrics[guardrail.Key] = guardrailData;
         }
 
-        experiment.UpdatedAt = operationTime;
-        experiment.Status = ExperimentStatus.Paused;
-        experiment.IsArchived = true;
+        var control = Normalize(run.ControlVariant) ?? "control";
+        var treatments = run.TreatmentVariants ?? [];
+        var analysisResult = BuildBayesianAnalysisJson(
+            run, experiment.Name ?? id.ToString(), primaryMetricEvent, metricAgg,
+            metrics, guardrails, control, treatments);
 
-        await UpdateAsync(experiment);
+        run.AnalysisResult = analysisResult;
+        run.UpdatedAt = DateTime.UtcNow;
+
+        await mongoDb.CollectionOf<ExperimentRun>().ReplaceOneAsync(
+            x => x.Id == runId && x.ExperimentId == id,
+            run);
+
+        return await GetAsync(envId, id);
     }
 
-    public async Task ArchiveIterations(Guid envId, Guid experimentId)
+    public async Task<IReadOnlyCollection<ExperimentRunForLayer>> GetExperimentRunsByLayersAsync(
+        Guid envId,
+        IReadOnlyCollection<ExperimentLayer> layers)
     {
-        var experiment = await GetAsync(experimentId);
-
-        if (experiment.Iterations.Any())
+        ArgumentNullException.ThrowIfNull(layers);
+        if (layers.Count == 0)
         {
-            // stop active iterations
-            var featureFlag = await MongoDb.QueryableOf<FeatureFlag>().FirstOrDefaultAsync(x => x.Id == experiment.FeatureFlagId);
-            var metric = await MongoDb.QueryableOf<ExperimentMetric>().FirstOrDefaultAsync(x => x.Id == experiment.MetricId);
-            if (featureFlag == null || metric == null)
+            return [];
+        }
+
+        var layerIds = layers.Select(x => (Guid?)x.Id).ToArray();
+        var layerKeys = layers.Select(x => x.Key).ToArray();
+        var runBuilder = Builders<ExperimentRun>.Filter;
+        var runs = await mongoDb.CollectionOf<ExperimentRun>()
+            .Find(runBuilder.Or(
+                runBuilder.In(x => x.LayerId, layerIds),
+                runBuilder.In(x => x.LayerKey, layerKeys)))
+            .ToListAsync();
+        if (runs.Count == 0)
+        {
+            return [];
+        }
+
+        var experimentIds = runs.Select(x => x.ExperimentId).Distinct().ToArray();
+        var experiments = await mongoDb.CollectionOf<Experiment>()
+            .Find(x => experimentIds.Contains(x.Id) && x.EnvId == envId)
+            .ToListAsync();
+        var experimentNames = experiments.ToDictionary(x => x.Id, x => x.Name);
+
+        return runs
+            .Where(x => experimentNames.ContainsKey(x.ExperimentId))
+            .Select(run => new ExperimentRunForLayer
             {
-                return;
-            }
+                Run = run,
+                ExperimentName = experimentNames[run.ExperimentId]
+            })
+            .ToArray();
+    }
 
-            var operationTime = DateTime.UtcNow;
-            foreach (var iteration in experiment.Iterations.Where(x => !x.EndTime.HasValue))
+    public async Task<IReadOnlyCollection<ExperimentWithRuns>> GetExperimentsWithRunsAsync(
+        Guid envId,
+        string? nameSearchText = null)
+    {
+        var builder = Builders<Experiment>.Filter;
+        var experimentFilter = builder.Eq(x => x.EnvId, envId);
+        if (!string.IsNullOrWhiteSpace(nameSearchText))
+        {
+            var search = new BsonRegularExpression(Regex.Escape(nameSearchText.Trim()), "i");
+            experimentFilter &= builder.Regex(x => x.Name, search);
+        }
+
+        var experiments = await mongoDb.CollectionOf<Experiment>()
+            .Find(experimentFilter)
+            .ToListAsync();
+        if (experiments.Count == 0)
+        {
+            return [];
+        }
+
+        var experimentIds = experiments.Select(x => x.Id).ToArray();
+        var runs = await mongoDb.CollectionOf<ExperimentRun>()
+            .Find(x => experimentIds.Contains(x.ExperimentId))
+            .ToListAsync();
+        var runsByExperiment = runs.ToLookup(x => x.ExperimentId);
+
+        return experiments
+            .Select(experiment => new ExperimentWithRuns
             {
-                iteration.EndTime = operationTime;
-                iteration.IsFinish = true;
+                Experiment = experiment,
+                Runs = runsByExperiment[experiment.Id].ToArray()
+            })
+            .ToArray();
+    }
 
-                var param = new ExptIterationParam
+    public async Task<PagedResult<ExperimentVm>> GetListAsync(
+        Guid envId,
+        ExperimentFilter filter)
+    {
+        filter ??= new ExperimentFilter();
+
+        var builder = Builders<Experiment>.Filter;
+        var filters = new List<FilterDefinition<Experiment>>
+        {
+            builder.Eq(x => x.EnvId, envId)
+        };
+
+        if (!string.IsNullOrWhiteSpace(filter.Name))
+        {
+            filters.Add(builder.Regex(x => x.Name, new BsonRegularExpression(filter.Name, "i")));
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.Stage))
+        {
+            filters.Add(builder.Eq(x => x.Stage, filter.Stage));
+        }
+
+        if (filter.FlagId.HasValue)
+        {
+            filters.Add(builder.Eq(x => x.FlagId, filter.FlagId));
+        }
+
+        var queryFilter = builder.And(filters);
+        var collection = mongoDb.CollectionOf<Experiment>();
+        var totalCount = await collection.CountDocumentsAsync(queryFilter);
+        var pageSize = filter.PageSize <= 0 ? 10 : filter.PageSize;
+        var pageIndex = Math.Max(filter.PageIndex, 0);
+
+        var experiments = await collection
+            .Find(queryFilter)
+            .SortByDescending(x => x.UpdatedAt)
+            .ThenByDescending(x => x.CreatedAt)
+            .Skip(pageIndex * pageSize)
+            .Limit(pageSize)
+            .ToListAsync();
+
+        var runLookup = await BuildRunLookupAsync(experiments.Select(x => x.Id).ToArray());
+        var flagLookup = await ExperimentFlagBinding.LoadAsync(featureFlagService, envId, experiments);
+
+        return new PagedResult<ExperimentVm>(
+            totalCount,
+            experiments.Select(experiment => ToVm(experiment, flagLookup.GetValueOrDefault(experiment.FlagId.GetValueOrDefault()), runLookup)).ToArray());
+    }
+
+    private async Task<Dictionary<Guid, ExperimentRun[]>> BuildRunLookupAsync(Guid[] experimentIds)
+    {
+        if (experimentIds.Length == 0)
+        {
+            return new Dictionary<Guid, ExperimentRun[]>();
+        }
+
+        return (await mongoDb.CollectionOf<ExperimentRun>()
+                .Find(x => experimentIds.Contains(x.ExperimentId))
+                .Project(x => new ExperimentRun
                 {
-                    ExptId = experiment.Id,
-                    IterationId = iteration.Id,
-                    EnvId = envId,
-                    FlagExptId = $"{envId}-{featureFlag.Key}",
-                    BaselineVariationId = experiment.BaselineVariationId,
-                    VariationIds = featureFlag.Variations.Select(x => x.Id),
-                    EventName = metric.EventName,
-                    EventType = (int)metric.EventType,
-                    CustomEventTrackOption = (int)iteration.CustomEventTrackOption,
-                    CustomEventSuccessCriteria = (int)iteration.CustomEventSuccessCriteria,
-                    CustomEventUnit = iteration.CustomEventUnit,
-                    StartExptTime = iteration.StartTime.ToUnixTimeMilliseconds(),
-                    EndExptTime = iteration.EndTime?.ToUnixTimeMilliseconds(),
-                    Alpha = experiment.Alpha
-                };
+                    Id = x.Id,
+                    ExperimentId = x.ExperimentId,
+                    Method = x.Method,
+                    CreatedAt = x.CreatedAt,
+                    ObservationStart = x.ObservationStart,
+                    ObservationEnd = x.ObservationEnd,
+                    Decision = x.Decision,
+                    WhatChanged = x.WhatChanged,
+                    WhatHappened = x.WhatHappened,
+                    ConfirmedOrRefuted = x.ConfirmedOrRefuted,
+                    WhyItHappened = x.WhyItHappened,
+                    NextHypothesis = x.NextHypothesis
+                })
+                .ToListAsync())
+            .GroupBy(x => x.ExperimentId)
+            .ToDictionary(x => x.Key, x => x.ToArray());
+    }
 
-                var olapExptResult = await olapService.GetExptIterationResultAsync(param);
-                if (olapExptResult != null)
-                {
-                    iteration.Results = olapExptResult.Results;
-                    iteration.UpdatedAt = olapExptResult.UpdatedAt;
-                }
-            }
+    private static ExperimentVm ToVm(
+        Experiment experiment,
+        FeatureFlag? flag = null,
+        IReadOnlyDictionary<Guid, ExperimentRun[]>? runLookup = null)
+    {
+        var runs = runLookup != null && runLookup.TryGetValue(experiment.Id, out var lookupRuns)
+            ? lookupRuns
+            : experiment.ExperimentRuns.ToArray();
 
-            experiment.UpdatedAt = operationTime;
-            experiment.Status = ExperimentStatus.NotStarted;
-            experiment.Iterations.ForEach(it => it.IsArchived = true);
-            await this.UpdateAsync(experiment);
+        return new ExperimentVm
+        {
+            Id = experiment.Id,
+            Name = experiment.Name,
+            Description = experiment.Description,
+            Stage = experiment.Stage,
+            FlagId = experiment.FlagId,
+            FlagKey = flag?.Key,
+            FlagName = flag?.Name,
+            EnvId = experiment.EnvId,
+            RunCount = runs.Length,
+            RunMethodSummary = BuildRunMethodSummary(runs.Select(run => run.Method)),
+            StateSummary = ExperimentListStateSummaryVm.From(experiment.LastLearning, runs),
+            CreatedAt = experiment.CreatedAt,
+            UpdatedAt = experiment.UpdatedAt
+        };
+    }
+
+    private static string BuildRunMethodSummary(IEnumerable<string> methods) =>
+        methods.Any() ? "Bayesian" : "No runs";
+
+    private static ExperimentDetailVm ToDetailVm(Experiment experiment, FeatureFlag? flag)
+    {
+        return new ExperimentDetailVm
+        {
+            Id = experiment.Id,
+            Name = experiment.Name,
+            Description = experiment.Description,
+            Stage = experiment.Stage,
+            FlagId = experiment.FlagId,
+            FlagKey = flag?.Key,
+            FlagName = flag?.Name,
+            EnvId = experiment.EnvId,
+            Hypothesis = experiment.Hypothesis,
+            Change = experiment.Change,
+            Constraints = experiment.Constraints,
+            Goal = experiment.Goal,
+            GuardrailMetrics = MetricSnapshots.Copy(experiment.GuardrailMetrics),
+            Intent = experiment.Intent,
+            LastAction = experiment.LastAction,
+            LastLearning = experiment.LastLearning,
+            PrimaryMetric = MetricSnapshots.Copy(experiment.PrimaryMetric),
+            ConflictAnalysis = experiment.ConflictAnalysis,
+            CreatedAt = experiment.CreatedAt,
+            UpdatedAt = experiment.UpdatedAt,
+            ExperimentRuns = experiment.ExperimentRuns
+                .OrderByDescending(x => x.CreatedAt)
+                .Select(x => ToRunVm(x))
+                .ToArray()
+        };
+    }
+
+    private static ExperimentRunVm ToRunVm(ExperimentRun run)
+    {
+        return new ExperimentRunVm
+        {
+            Id = run.Id,
+            ExperimentId = run.ExperimentId,
+            Slug = run.Slug,
+            Method = run.Method,
+            PrimaryMetric = MetricSnapshots.Copy(run.PrimaryMetric),
+            GuardrailMetrics = MetricSnapshots.Copy(run.GuardrailMetrics),
+            ControlVariant = run.ControlVariant,
+            TreatmentVariants = run.TreatmentVariants,
+            Variations = run.Variations,
+            MinimumSample = run.MinimumSample,
+            ObservationStart = run.ObservationStart,
+            ObservationEnd = run.ObservationEnd,
+            PriorProper = run.PriorProper,
+            PriorMean = run.PriorMean,
+            PriorStddev = run.PriorStddev,
+            AnalysisResult = run.AnalysisResult,
+            Decision = run.Decision,
+            DecisionSummary = run.DecisionSummary,
+            DecisionReason = run.DecisionReason,
+            WhatChanged = run.WhatChanged,
+            WhatHappened = run.WhatHappened,
+            ConfirmedOrRefuted = run.ConfirmedOrRefuted,
+            WhyItHappened = run.WhyItHappened,
+            NextHypothesis = run.NextHypothesis,
+            TrafficPercent = run.TrafficPercent,
+            LayerId = run.LayerId,
+            TrafficOffset = run.TrafficOffset,
+            LayerKey = run.LayerKey,
+            AllocationKeySelector = run.AllocationKeySelector,
+            SliceStart = run.SliceStart,
+            SliceEnd = run.SliceEnd,
+            AllocationPlan = run.AllocationPlan,
+            AssignmentUnitSelector = run.AssignmentUnitSelector,
+            LayerTrafficPercent = run.LayerTrafficPercent,
+            AnalysisSamplingPlan = run.AnalysisSamplingPlan,
+            CreatedAt = run.CreatedAt,
+            UpdatedAt = run.UpdatedAt
+        };
+    }
+
+
+
+    private static void ApplyRunUpdate(ExperimentRun run, ExperimentRunUpdate update)
+    {
+        run.Slug = Normalize(update.Slug, run.Slug);
+        run.Method = Normalize(update.Method, run.Method);
+        if (update.ControlVariant != null) run.ControlVariant = update.ControlVariant;
+        run.TreatmentVariants = update.TreatmentVariants?.ToArray() ?? run.TreatmentVariants;
+        run.AnalysisResult = Normalize(update.AnalysisResult, run.AnalysisResult);
+        run.Decision = Normalize(update.Decision, run.Decision);
+        run.DecisionSummary = Normalize(update.DecisionSummary, run.DecisionSummary);
+        run.DecisionReason = Normalize(update.DecisionReason, run.DecisionReason);
+        run.WhatChanged = Normalize(update.WhatChanged, run.WhatChanged);
+        run.WhatHappened = Normalize(update.WhatHappened, run.WhatHappened);
+        run.ConfirmedOrRefuted = Normalize(update.ConfirmedOrRefuted, run.ConfirmedOrRefuted);
+        run.WhyItHappened = Normalize(update.WhyItHappened, run.WhyItHappened);
+        run.NextHypothesis = Normalize(update.NextHypothesis, run.NextHypothesis);
+        run.LayerId = update.LayerId ?? run.LayerId;
+        run.LayerKey = Normalize(update.LayerKey, run.LayerKey);
+        run.AllocationKeySelector = Normalize(update.AllocationKeySelector, run.AllocationKeySelector);
+        run.AllocationPlan = Normalize(update.AllocationPlan, run.AllocationPlan);
+        run.AssignmentUnitSelector = Normalize(update.AssignmentUnitSelector, run.AssignmentUnitSelector);
+        run.AnalysisSamplingPlan = Normalize(update.AnalysisSamplingPlan, run.AnalysisSamplingPlan);
+
+        if (update.MinimumSample.HasValue) run.MinimumSample = update.MinimumSample;
+        if (update.ObservationStart.HasValue) run.ObservationStart = update.ObservationStart;
+        if (update.ObservationEnd.HasValue) run.ObservationEnd = update.ObservationEnd;
+        if (update.PriorProper.HasValue) run.PriorProper = update.PriorProper.Value;
+        if (update.PriorMean.HasValue) run.PriorMean = update.PriorMean;
+        if (update.PriorStddev.HasValue) run.PriorStddev = update.PriorStddev;
+        if (update.TrafficPercent.HasValue) run.TrafficPercent = Math.Clamp(update.TrafficPercent.Value, 1, 100);
+        if (update.TrafficOffset.HasValue) run.TrafficOffset = Math.Clamp(update.TrafficOffset.Value, 0, 99);
+        if (update.SliceStart.HasValue) run.SliceStart = Math.Clamp(update.SliceStart.Value, 0, 100);
+        if (update.SliceEnd.HasValue) run.SliceEnd = Math.Clamp(update.SliceEnd.Value, 0, 100);
+        if (update.LayerTrafficPercent.HasValue) run.LayerTrafficPercent = Math.Clamp(update.LayerTrafficPercent.Value, 0d, 100d);
+        if (update.SliceStart.HasValue || update.SliceEnd.HasValue)
+        {
+            run.LayerTrafficPercent = Math.Clamp((run.SliceEnd ?? 100) - (run.SliceStart ?? 0), 0d, 100d);
         }
     }
 
-    public async Task StopAsync(Guid envId, Guid experimentId)
+    private static string? Normalize(string? value, string? fallback = null)
     {
-        var experiment = await GetAsync(experimentId);
+        return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+    }
 
-        var operationTime = DateTime.UtcNow;
-
-        var hasRunningIteration = experiment.Iterations.Any(i => !i.IsFinish);
-        if (!hasRunningIteration)
+    private async Task NormalizeAndValidateLayerAssignmentAsync(Guid envId, ExperimentRun run)
+    {
+        ExperimentRunAllocation.NormalizeAndValidateWindow(run);
+        var layerId = run.LayerId;
+        var layerKey = Normalize(run.LayerKey);
+        if (!layerId.HasValue && string.IsNullOrWhiteSpace(layerKey))
         {
+            run.AssignmentUnitSelector = Normalize(run.AssignmentUnitSelector, run.AllocationKeySelector) ?? "user.keyId";
+            run.AllocationKeySelector = Normalize(run.AllocationKeySelector, run.AssignmentUnitSelector) ?? "user.keyId";
+            NormalizeRunSlice(run);
             return;
         }
 
-        experiment.Status = ExperimentStatus.Paused;
-        
-        var featureFlag = await MongoDb.QueryableOf<FeatureFlag>().FirstOrDefaultAsync(x => x.Id == experiment.FeatureFlagId);
-        var metric = await MongoDb.QueryableOf<ExperimentMetric>().FirstOrDefaultAsync(x => x.Id == experiment.MetricId);
-        if (featureFlag == null || metric == null)
+        var layer = await FindActiveLayerAsync(envId, layerId, layerKey);
+        if (layer != null)
         {
-            return;
+            run.LayerId = layer.Id;
+            run.LayerKey = layer.Key;
+            run.AssignmentUnitSelector = Normalize(layer.AssignmentUnitSelector) ?? "user.keyId";
+            run.AllocationKeySelector = run.AssignmentUnitSelector;
+        }
+        else
+        {
+            run.LayerKey = layerKey;
+            run.AssignmentUnitSelector = Normalize(run.AssignmentUnitSelector, run.AllocationKeySelector) ?? "user.keyId";
+            run.AllocationKeySelector = Normalize(run.AllocationKeySelector, run.AssignmentUnitSelector) ?? "user.keyId";
         }
 
-        // stop active iterations
-        foreach (var it in experiment.Iterations.Where(x => !x.EndTime.HasValue))
+        NormalizeRunSlice(run);
+
+        var experimentIds = await mongoDb.CollectionOf<Experiment>()
+            .Find(x => x.EnvId == envId)
+            .Project(x => x.Id)
+            .ToListAsync();
+        var candidates = await mongoDb.CollectionOf<ExperimentRun>()
+            .Find(x =>
+                experimentIds.Contains(x.ExperimentId) &&
+                x.Id != run.Id &&
+                x.ExperimentId != run.ExperimentId &&
+                ((run.LayerId.HasValue && x.LayerId == run.LayerId) ||
+                 (run.LayerKey != null && x.LayerKey == run.LayerKey)))
+            .ToListAsync();
+
+        ExperimentRunAllocation.ValidateReservation(run, candidates);
+    }
+
+    private async Task<ExperimentLayer?> FindActiveLayerAsync(Guid envId, Guid? layerId, string? layerKey)
+    {
+        if (layerId.HasValue)
         {
-            it.EndTime = operationTime;
-            it.IsFinish = true;
-            it.UpdatedAt = operationTime;
-
-            var param = new ExptIterationParam
+            var byId = await mongoDb.CollectionOf<ExperimentLayer>()
+                .Find(x => x.Id == layerId.Value && x.EnvId == envId && x.Status == "active")
+                .FirstOrDefaultAsync();
+            if (byId != null)
             {
-                ExptId = experiment.Id,
-                IterationId = it.Id,
-                EnvId = envId,
-                FlagExptId = $"{envId}-{featureFlag.Key}",
-                BaselineVariationId = experiment.BaselineVariationId,
-                VariationIds = featureFlag.Variations.Select(x => x.Id),
-                EventName = metric.EventName,
-                EventType = (int)metric.EventType,
-                CustomEventTrackOption = (int)it.CustomEventTrackOption,
-                CustomEventSuccessCriteria = (int)it.CustomEventSuccessCriteria,
-                CustomEventUnit = it.CustomEventUnit,
-                StartExptTime = it.StartTime.ToUnixTimeMilliseconds(),
-                EndExptTime = it.EndTime.Value.ToUnixTimeMilliseconds()
-            };
-
-            var olapExptResult = await olapService.GetExptIterationResultAsync(param);
-            if (olapExptResult != null)
-            {
-                it.Results = olapExptResult.Results;
-                it.UpdatedAt = olapExptResult.UpdatedAt;
+                return byId;
             }
         }
 
-        await UpdateAsync(experiment);
-    }
-
-    public async Task<ExperimentIteration?> StartAsync(Guid envId, Guid experimentId)
-    {
-        var experiment = await GetAsync(experimentId);
-
-        var operationTime = DateTime.UtcNow;
-
-        experiment.Iterations ??= new List<ExperimentIteration>();
-        
-        var featureFlag = await MongoDb.QueryableOf<FeatureFlag>().FirstOrDefaultAsync(x => x.Id == experiment.FeatureFlagId);
-        var metric = await MongoDb.QueryableOf<ExperimentMetric>().FirstOrDefaultAsync(x => x.Id == experiment.MetricId);
-        if (featureFlag == null || metric == null)
+        if (string.IsNullOrWhiteSpace(layerKey))
         {
             return null;
         }
 
-        // stop active iterations
-        foreach (var iteration in experiment.Iterations.Where(x => !x.EndTime.HasValue))
+        return await mongoDb.CollectionOf<ExperimentLayer>()
+            .Find(x => x.EnvId == envId && x.Key == layerKey && x.Status == "active")
+            .FirstOrDefaultAsync();
+    }
+
+    private static void NormalizeRunSlice(ExperimentRun run)
+    {
+        var (sliceStart, sliceEnd) = GetRunSlice(run);
+        run.SliceStart = sliceStart;
+        run.SliceEnd = sliceEnd;
+        run.TrafficOffset = (int)Math.Clamp(Math.Floor(sliceStart), 0, 99);
+        run.LayerTrafficPercent = Math.Clamp(sliceEnd - sliceStart, 0d, 100d);
+        run.TrafficPercent = Math.Clamp(run.TrafficPercent ?? run.LayerTrafficPercent ?? 100d, 1d, 100d);
+    }
+
+    private static (double Start, double End) GetRunSlice(ExperimentRun run)
+    {
+        var start = Math.Clamp(run.SliceStart ?? run.TrafficOffset ?? 0, 0d, 100d);
+        var end = Math.Clamp(
+            run.SliceEnd ?? Math.Min(100d, start + (run.LayerTrafficPercent ?? run.TrafficPercent ?? 100d)),
+            0d,
+            100d);
+        if (end <= start)
         {
-            iteration.EndTime = operationTime;
-            iteration.IsFinish = true;
-
-            var param = new ExptIterationParam
+            if (start >= 100d)
             {
-                ExptId = experiment.Id,
-                IterationId = iteration.Id,
-                EnvId = envId,
-                FlagExptId = $"{envId}-{featureFlag.Key}",
-                BaselineVariationId = experiment.BaselineVariationId,
-                VariationIds = featureFlag.Variations.Select(x => x.Id),
-                EventName = metric.EventName,
-                EventType = (int)metric.EventType,
-                CustomEventTrackOption = (int)iteration.CustomEventTrackOption,
-                CustomEventSuccessCriteria = (int)iteration.CustomEventSuccessCriteria,
-                CustomEventUnit = iteration.CustomEventUnit,
-                StartExptTime = iteration.StartTime.ToUnixTimeMilliseconds(),
-                EndExptTime = iteration.EndTime?.ToUnixTimeMilliseconds()
-            };
-
-            var olapExptResult = await olapService.GetExptIterationResultAsync(param);
-            if (olapExptResult != null)
+                start = 99d;
+                end = 100d;
+            }
+            else
             {
-                iteration.Results = olapExptResult.Results;
-                iteration.UpdatedAt = olapExptResult.UpdatedAt;
+                end = Math.Min(100d, start + 1d);
             }
         }
 
-        // start new iteration
-        var newIteration = new ExperimentIteration
+        return (start, end);
+    }
+
+    private async Task<Experiment> GetExperimentAsync(Guid envId, Guid id)
+    {
+        var experiment = await mongoDb.CollectionOf<Experiment>()
+            .Find(x => x.Id == id && x.EnvId == envId)
+            .FirstOrDefaultAsync();
+
+        if (experiment == null)
         {
-            Id = Guid.NewGuid().ToString(),
-            StartTime = operationTime,
-            Results = [],
-            CustomEventSuccessCriteria = metric.CustomEventSuccessCriteria,
-            CustomEventTrackOption = metric.CustomEventTrackOption,
-            CustomEventUnit = metric.CustomEventUnit,
-            EventType = (int)metric.EventType,
-            EventName = metric.EventName
+            throw new EntityNotFoundException(nameof(Experiment), $"{envId}-{id}");
+        }
+
+        return experiment;
+    }
+
+    private async Task EnsureExperimentExistsAsync(Guid envId, Guid id)
+    {
+        var exists = await mongoDb.CollectionOf<Experiment>()
+            .Find(x => x.Id == id && x.EnvId == envId)
+            .AnyAsync();
+
+        if (!exists)
+        {
+            throw new EntityNotFoundException(nameof(Experiment), $"{envId}-{id}");
+        }
+    }
+
+    private async Task<ExperimentRun> GetRunAsync(Guid experimentId, Guid runId)
+    {
+        var run = await mongoDb.CollectionOf<ExperimentRun>()
+            .Find(x => x.Id == runId && x.ExperimentId == experimentId)
+            .FirstOrDefaultAsync();
+
+        if (run == null)
+        {
+            throw new EntityNotFoundException(nameof(ExperimentRun), $"{experimentId}-{runId}");
+        }
+
+        return run;
+    }
+
+    private async Task<ExperimentMetric> ResolveMetricAsync(Guid envId, Guid metricId)
+    {
+        if (metricId == Guid.Empty)
+        {
+            throw new ArgumentException("Select an existing metric by metricId.");
+        }
+
+        return await metricService.GetBySelectorAsync(envId, metricId, null);
+    }
+
+    private async Task<List<GuardrailMetricConfig>> BuildGuardrailMetricsConfigAsync(
+        Guid envId,
+        IEnumerable<GuardrailMetricSelection> selections,
+        ExperimentMetric primaryMetric)
+    {
+        var guardrails = new List<GuardrailMetricConfig>();
+        var guardrailMetricIds = new HashSet<Guid>();
+        foreach (var selection in selections)
+        {
+            var metric = await ResolveMetricAsync(envId, selection.MetricId);
+            if (metric.Id == primaryMetric.Id)
+            {
+                throw new ArgumentException("Primary metric cannot also be selected as a guardrail.");
+            }
+
+            if (!guardrailMetricIds.Add(metric.Id))
+            {
+                throw new ArgumentException("A guardrail metric can only be selected once.");
+            }
+
+            guardrails.Add(new GuardrailMetricConfig
+            {
+                MetricId = metric.Id,
+                MetricKey = metric.Key,
+                Name = metric.Name,
+                EventName = metric.EventName,
+                Description = metric.Description,
+                MetricType = metric.MetricType,
+                MetricAgg = metric.MetricAgg,
+                Direction = selection.Direction
+            });
+        }
+
+        return guardrails;
+    }
+
+    private static PrimaryMetricConfig BuildPrimaryMetricConfig(ExperimentMetric metric, string expectedDirection) => new()
+    {
+        MetricId = metric.Id,
+        MetricKey = metric.Key,
+        Name = metric.Name,
+        EventName = metric.EventName,
+        Description = Normalize(metric.Description),
+        MetricType = metric.MetricType,
+        MetricAgg = metric.MetricAgg,
+        ExpectedDirection = expectedDirection
+    };
+
+    private static Dictionary<string, object> BuildMetricData(
+        string metricType,
+        IEnumerable<ExperimentVariantStatsVm> variants)
+    {
+        var metricData = new Dictionary<string, object>();
+
+        foreach (var row in variants)
+        {
+            if (string.IsNullOrWhiteSpace(row.Variant))
+            {
+                continue;
+            }
+
+            metricData[row.Variant] = metricType == "binary"
+                ? new Dictionary<string, object>
+                {
+                    ["n"] = row.Users,
+                    ["k"] = row.Conversions
+                }
+                : new Dictionary<string, object>
+                {
+                    ["n"] = row.Users,
+                    ["sum"] = row.SumValue,
+                    ["sum_squares"] = row.SumSquares
+                };
+        }
+
+        return metricData;
+    }
+
+    private static string BuildBayesianAnalysisJson(
+        ExperimentRun run,
+        string experimentName,
+        string primaryMetricEvent,
+        string primaryMetricAgg,
+        Dictionary<string, Dictionary<string, object>> metrics,
+        IReadOnlyCollection<GuardrailDefinition> guardrails,
+        string control,
+        string[] treatments)
+    {
+        var prior = new GaussianPrior(
+            run.PriorMean ?? 0,
+            Math.Pow(run.PriorStddev ?? 0.3, 2),
+            run.PriorProper);
+        var priorLabel = prior.Proper
+            ? $"Gaussian(mu={run.PriorMean ?? 0}, sigma={run.PriorStddev ?? 0.3})"
+            : "flat (improper)";
+
+        var primaryKey = MetricSnapshots.Identity(run.PrimaryMetric);
+        var primaryData = metrics.GetValueOrDefault(primaryKey);
+        var observed = BuildObservedCounts(primaryData, control, treatments);
+        var srmPValue = SrmCheck(observed.Values.ToArray());
+        var minN = observed.Count == 0 ? 0 : observed.Values.Min();
+        var minimumSample = run.MinimumSample ?? 0;
+
+        var warnings = new List<string>();
+        var primaryMetric = metrics.TryGetValue(primaryKey, out var resolvedPrimaryData)
+            ? ComputeMetricSection(primaryMetricEvent, resolvedPrimaryData, control, treatments, false, prior, primaryMetricAgg)
+            : null;
+
+        if (primaryMetric != null)
+        {
+            primaryMetric["metricId"] = run.PrimaryMetric.MetricId;
+            primaryMetric["metricKey"] = run.PrimaryMetric.MetricKey;
+        }
+
+        if (primaryMetric == null && resolvedPrimaryData != null)
+        {
+            var availableKeys = resolvedPrimaryData
+                .Where(x => x.Value is Dictionary<string, object>)
+                .Select(x => x.Key)
+                .ToArray();
+            var expectedKeys = new[] { control }.Concat(treatments)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var unexpected = availableKeys
+                .Where(x => !expectedKeys.Contains(x))
+                .ToArray();
+
+            if (unexpected.Length > 0)
+            {
+                warnings.Add(
+                    $"Unexpected variant data: expected [{string.Join(", ", expectedKeys)}] but metric data also has [{string.Join(", ", unexpected)}]. Update the run's control/treatment variant settings if these values should be included.");
+            }
+        }
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["type"] = "bayesian",
+            ["experiment"] = experimentName,
+            ["computed_at"] = DateTime.UtcNow,
+            ["window"] = new Dictionary<string, object?>
+            {
+                ["start"] = run.ObservationStart,
+                ["end"] = run.ObservationEnd
+            },
+            ["control"] = control,
+            ["treatments"] = treatments,
+            ["prior"] = priorLabel,
+            ["srm"] = new Dictionary<string, object>
+            {
+                ["chi2_p_value"] = Round(srmPValue, 4),
+                ["ok"] = srmPValue >= 0.01,
+                ["observed"] = observed
+            },
+            ["primary_metric"] = primaryMetric,
+            ["guardrails"] = BuildGuardrailSections(metrics, guardrails, control, treatments),
+            ["sample_check"] = new Dictionary<string, object>
+            {
+                ["minimum_per_variant"] = minimumSample,
+                ["ok"] = minimumSample == 0 || minN >= minimumSample,
+                ["variants"] = observed
+            }
         };
 
-        experiment.Iterations.Add(newIteration);
-        experiment.Status = ExperimentStatus.Recording;
+        if (warnings.Count > 0)
+        {
+            payload["warnings"] = warnings;
+        }
 
-        await UpdateAsync(experiment);
-
-        return newIteration;
+        return JsonSerializer.Serialize(payload);
     }
 
-    public async Task<IEnumerable<ExperimentIterationResultsVm>> GetIterationResults(Guid envId,
-        IEnumerable<ExperimentIterationParam> experimentIterationParam)
+    private static List<Dictionary<string, object?>> BuildGuardrailSections(
+        Dictionary<string, Dictionary<string, object>> metrics,
+        IReadOnlyCollection<GuardrailDefinition> guardrails,
+        string control,
+        string[] treatments)
     {
-        var results = new List<ExperimentIterationResultsVm>();
-
-        foreach (var iteration in experimentIterationParam)
+        var sections = new List<Dictionary<string, object?>>();
+        foreach (var guardrail in guardrails)
         {
-            var experiment = await GetAsync(iteration.ExptId);
-            var targetIteration = experiment?.Iterations?.FirstOrDefault(it => it.Id == iteration.IterationId);
-
-            if (experiment == null || targetIteration == null)
+            if (!metrics.TryGetValue(guardrail.Key, out var guardrailData))
             {
                 continue;
             }
 
-            var iterationResults = new ExperimentIterationResultsVm
+            if (guardrail.Inverse && !guardrailData.ContainsKey("inverse"))
             {
-                Id = iteration.IterationId
-            };
-
-            if (targetIteration.IsLocked())
-            {
-                iterationResults.IsFinish = true;
-                iterationResults.IsUpdated = false;
-                iterationResults.Results = targetIteration.Results;
-                results.Add(iterationResults);
-
-                continue;
+                guardrailData["inverse"] = true;
             }
 
-            var param = new ExptIterationParam
+            var section = ComputeMetricSection(
+                guardrail.Event,
+                guardrailData,
+                control,
+                treatments,
+                true,
+                null,
+                guardrail.MetricAgg);
+            if (section != null)
             {
-                ExptId = iteration.ExptId,
-                IterationId = iteration.IterationId,
-                EnvId = envId,
-                FlagExptId = iteration.FlagExptId,
-                BaselineVariationId = iteration.BaselineVariationId,
-                VariationIds = iteration.VariationIds,
-                EventName = iteration.EventName,
-                EventType = iteration.EventType,
-                CustomEventTrackOption = (int)iteration.CustomEventTrackOption,
-                CustomEventSuccessCriteria = (int)iteration.CustomEventSuccessCriteria,
-                CustomEventUnit = iteration.CustomEventUnit,
-                StartExptTime = iteration.StartTime,
-                EndExptTime = targetIteration.EndTime?.ToUnixTimeMilliseconds(),
-                Alpha = experiment.Alpha
+                section["metricId"] = guardrail.MetricId;
+                section["metricKey"] = guardrail.MetricKey;
+                sections.Add(section);
+            }
+        }
+
+        return sections;
+    }
+
+    private static Dictionary<string, object?>? ComputeMetricSection(
+        string label,
+        Dictionary<string, object> metricData,
+        string control,
+        string[] treatments,
+        bool isGuardrail,
+        GaussianPrior? prior,
+        string? metricAgg)
+    {
+        var inverse = TryGetBool(metricData, "inverse");
+        var isProp = IsBinaryMetricData(metricData);
+        var ctrlRaw = GetVariantData(metricData, control) ?? EmptyVariantData(isProp);
+        var (meanA, varA, nA) = MetricMoments(ctrlRaw);
+        var rows = new List<Dictionary<string, object?>>();
+        var ctrlRow = new Dictionary<string, object?>
+        {
+            ["variant"] = control,
+            ["n"] = nA,
+            ["is_control"] = true
+        };
+
+        if (isProp)
+        {
+            ctrlRow["conversions"] = (long)Math.Floor(GetDouble(ctrlRaw, "k"));
+            ctrlRow["rate"] = Round(meanA, 6);
+        }
+        else
+        {
+            ctrlRow["mean"] = Round(meanA, 4);
+        }
+        rows.Add(ctrlRow);
+
+        var verdicts = new List<string>();
+        foreach (var treatment in treatments)
+        {
+            var trtRaw = GetVariantData(metricData, treatment) ?? EmptyVariantData(isProp);
+            var (meanB, varB, nB) = MetricMoments(trtRaw);
+            var bay = BayesianResult(meanA, varA, nA, meanB, varB, nB, inverse, prior);
+            var trtRow = new Dictionary<string, object?>
+            {
+                ["variant"] = treatment,
+                ["n"] = nB,
+                ["is_control"] = false
             };
 
-            var olapExptResults = await olapService.GetExptIterationResultAsync(param);
-            if (olapExptResults != null)
+            if (isProp)
             {
-                iterationResults.IsFinish = olapExptResults.IsFinish;
-                iterationResults.Results = olapExptResults.Results;
-                iterationResults.UpdatedAt = olapExptResults.UpdatedAt;
-                iterationResults.IsUpdated = true;
-
-                targetIteration.IsFinish = olapExptResults.IsFinish;
-                targetIteration.Results = olapExptResults.Results;
-                targetIteration.UpdatedAt = olapExptResults.UpdatedAt;
-                await UpdateAsync(experiment);
+                trtRow["conversions"] = (long)Math.Floor(GetDouble(trtRaw, "k"));
+                trtRow["rate"] = Round(meanB, 6);
+            }
+            else
+            {
+                trtRow["mean"] = Round(meanB, 4);
             }
 
-            results.Add(iterationResults);
+            if (bay.Error == null)
+            {
+                trtRow["rel_delta"] = Round(bay.RelativeChange, 6);
+                trtRow["ci_lower"] = Round(bay.CiRelLower, 6);
+                trtRow["ci_upper"] = Round(bay.CiRelUpper, 6);
+                if (isGuardrail)
+                {
+                    trtRow["p_harm"] = Round(1 - bay.ChanceToWin, 4);
+                    trtRow["risk_ctrl"] = Round(bay.RiskCtrl, 6);
+                    trtRow["risk_trt"] = Round(bay.RiskTrt, 6);
+                }
+                else
+                {
+                    trtRow["p_win"] = Round(bay.ChanceToWin, 4);
+                    trtRow["risk_ctrl"] = Round(bay.RiskCtrl, 6);
+                    trtRow["risk_trt"] = Round(bay.RiskTrt, 6);
+                }
+
+                var prefix = treatments.Length > 1 ? $"{treatment}: " : "";
+                if (isGuardrail)
+                {
+                    var pHarm = 1 - bay.ChanceToWin;
+                    verdicts.Add(pHarm <= GuardrailHealthyHarmProbability
+                        ? $"{prefix}guardrail clear"
+                        : pHarm >= GuardrailAlarmHarmProbability
+                            ? $"{prefix}guardrail ALARM - likely regression"
+                            : $"{prefix}guardrail inconclusive - monitor");
+                }
+                else
+                {
+                    verdicts.Add(bay.ChanceToWin >= 0.95
+                        ? $"{prefix}strong signal -> adopt treatment"
+                        : bay.ChanceToWin >= 0.8
+                            ? $"{prefix}leaning treatment"
+                            : bay.ChanceToWin <= 0.05
+                                ? $"{prefix}treatment appears harmful"
+                                : bay.ChanceToWin <= 0.2
+                                    ? $"{prefix}leaning control"
+                                    : $"{prefix}inconclusive");
+                }
+            }
+
+            rows.Add(trtRow);
         }
 
-        return results;
+        var section = new Dictionary<string, object?>
+        {
+            ["event"] = label,
+            ["metric_type"] = isProp ? "proportion" : "numeric",
+            ["rows"] = rows,
+            ["verdict"] = verdicts.Count > 0 ? string.Join("; ", verdicts) : "no data"
+        };
+
+        if (inverse)
+        {
+            section["inverse"] = true;
+        }
+
+        if (metricAgg is "once" or "count" or "sum" or "average")
+        {
+            section["metric_agg"] = metricAgg;
+        }
+
+        return section;
     }
 
-    public async Task<IEnumerable<ExperimentStatusCountVm>> GetStatusCountAsync(Guid envId)
+    private static bool IsBinaryMetricData(Dictionary<string, object> metricData)
     {
-        var query = Queryable
-            .Where(x => x.EnvId == envId && !x.IsArchived)
-            .GroupBy(expt => expt.Status)
-            .Select(group => new ExperimentStatusCountVm
+        return metricData.Values
+            .Select(value => value switch
             {
-                Status = group.Key,
-                Count = group.Count()
-            });
-
-        return await query.ToListAsync();
+                Dictionary<string, object> data => data,
+                JsonElement element when element.ValueKind == JsonValueKind.Object => GetVariantData(
+                    new Dictionary<string, object> { ["_"] = element },
+                    "_"),
+                _ => null
+            })
+            .OfType<Dictionary<string, object>>()
+            .Any(data => data.ContainsKey("k"));
     }
 
-    public async Task<PagedResult<ExperimentVm>> GetListAsync(Guid envId, ExperimentFilter filter)
+    private static Dictionary<string, object> EmptyVariantData(bool isBinary)
     {
-        var flags = MongoDb.QueryableOf<FeatureFlag>();
-        var metrics = MongoDb.QueryableOf<ExperimentMetric>();
-
-        if (!string.IsNullOrWhiteSpace(filter.FeatureFlagName))
-        {
-            flags = flags.Where(x => x.Name.Contains(filter.FeatureFlagName));
-        }
-
-        if (filter.FeatureFlagId.HasValue)
-        {
-            flags = flags.Where(x => x.Id == filter.FeatureFlagId.Value);
-        }
-
-        var query = from flag in flags
-            join experiment in Queryable on flag.Id equals experiment.FeatureFlagId
-            join metric in metrics on experiment.MetricId equals metric.Id
-            where experiment.EnvId == envId && !experiment.IsArchived
-            select new ExperimentVm
+        return isBinary
+            ? new Dictionary<string, object>
             {
-                Id = experiment.Id,
-                BaselineVariationId = experiment.BaselineVariationId,
-                Variations = flag.Variations,
-                FeatureFlagId = flag.Id,
-                FeatureFlagKey = flag.Key,
-                FeatureFlagName = flag.Name,
-                MetricId = experiment.MetricId,
-                MetricName = metric.Name,
-                MetricEventName = metric.EventName,
-                MetricEventType = metric.EventType,
-                MetricCustomEventUnit = metric.CustomEventUnit,
-                Status = experiment.Status,
-                MetricCustomEventTrackOption = metric.CustomEventTrackOption,
-                MetricCustomEventSuccessCriteria = metric.CustomEventSuccessCriteria,
-                Iterations = experiment.Iterations,
-                Alpha = experiment.Alpha
+                ["n"] = 0L,
+                ["k"] = 0L
+            }
+            : new Dictionary<string, object>
+            {
+                ["n"] = 0L,
+                ["sum"] = 0D,
+                ["sum_squares"] = 0D
             };
+    }
 
-        var totalCount = await query.CountAsync();
-
-        var items = filter.PageSize == -1
-            ? await query.ToListAsync()
-            : await query
-                .Skip(filter.PageIndex * filter.PageSize)
-                .Take(filter.PageSize)
-                .ToListAsync();
-
-        foreach (var item in items)
+    private static Dictionary<string, long> BuildObservedCounts(
+        Dictionary<string, object>? metricData,
+        string control,
+        string[] treatments)
+    {
+        var observed = new Dictionary<string, long>();
+        if (metricData == null)
         {
-            item.Iterations = item.Iterations != null
-                ? item.Iterations.Where(p => !p.IsArchived).ToList()
-                : item.Iterations;
-            item.BaselineVariation = item.Variations.FirstOrDefault(x => x.Id == item.BaselineVariationId);
-            item.Alpha ??= 0.05;
+            return observed;
         }
 
-        return new PagedResult<ExperimentVm>(totalCount, items);
+        foreach (var variant in new[] { control }.Concat(treatments))
+        {
+            var data = GetVariantData(metricData, variant);
+            observed[variant] = data == null ? 0 : (long)Math.Floor(GetDouble(data, "n"));
+        }
+
+        return observed;
+    }
+
+    private static Dictionary<string, object>? GetVariantData(Dictionary<string, object> metricData, string variant)
+    {
+        if (!metricData.TryGetValue(variant, out var value))
+        {
+            return null;
+        }
+
+        if (value is Dictionary<string, object> data)
+        {
+            return data;
+        }
+
+        if (value is JsonElement element && element.ValueKind == JsonValueKind.Object)
+        {
+            return element.EnumerateObject().ToDictionary(
+                prop => prop.Name,
+                prop => prop.Value.ValueKind switch
+                {
+                    JsonValueKind.Number when prop.Value.TryGetInt64(out var l) => (object)l,
+                    JsonValueKind.Number when prop.Value.TryGetDouble(out var d) => d,
+                    JsonValueKind.True => true,
+                    JsonValueKind.False => false,
+                    JsonValueKind.String => prop.Value.GetString() ?? string.Empty,
+                    _ => prop.Value.ToString()
+                });
+        }
+
+        return null;
+    }
+
+    private static (double Mean, double Variance, long N) MetricMoments(Dictionary<string, object>? data)
+    {
+        if (data == null)
+        {
+            return (0, 0, 0);
+        }
+
+        var n = (long)Math.Floor(GetDouble(data, "n"));
+        if (n == 0)
+        {
+            return (0, 0, 0);
+        }
+
+        if (data.ContainsKey("k"))
+        {
+            var mean = GetDouble(data, "k") / n;
+            return (mean, mean * (1 - mean), n);
+        }
+
+        if (data.ContainsKey("sum"))
+        {
+            var sum = GetDouble(data, "sum");
+            var sumSquares = GetDouble(data, "sum_squares");
+            var mean = sum / n;
+            var variance = n > 1 ? (sumSquares - sum * sum / n) / (n - 1) : 0;
+            return (mean, variance, n);
+        }
+
+        if (data.ContainsKey("mean"))
+        {
+            return (GetDouble(data, "mean"), GetDouble(data, "variance"), n);
+        }
+
+        return (0, 0, 0);
+    }
+
+    private static BayesianComparison BayesianResult(
+        double meanA,
+        double varA,
+        long nA,
+        double meanB,
+        double varB,
+        long nB,
+        bool inverse,
+        GaussianPrior? prior)
+    {
+        if (nA == 0 || nB == 0)
+        {
+            return BayesianComparison.Failed("zero sample size");
+        }
+
+        if (meanA == 0)
+        {
+            return BayesianComparison.Failed("control mean is zero - cannot compute relative effect");
+        }
+
+        var muRel = (meanB - meanA) / meanA;
+        var muAbs = meanB - meanA;
+        var seRel = DeltaMethodSe(meanA, varA, nA, meanB, varB, nB, true);
+        if (seRel == 0)
+        {
+            return DeterministicComparison(muRel, muAbs, inverse);
+        }
+
+        var priorApplied = false;
+        if (prior is { Proper: true })
+        {
+            var dataPrecision = 1 / Math.Pow(seRel, 2);
+            var priorPrecision = 1 / prior.Variance;
+            var postPrecision = dataPrecision + priorPrecision;
+            muRel = (muRel * dataPrecision + prior.Mean * priorPrecision) / postPrecision;
+            seRel = Math.Sqrt(1 / postPrecision);
+            priorApplied = true;
+        }
+
+        var zHalf = NormalPpf(0.975);
+        var chanceToWin = NormalSf(0, muRel, seRel);
+        if (inverse)
+        {
+            chanceToWin = 1 - chanceToWin;
+        }
+
+        var (riskCtrl, riskTrt) = Risk(muRel, seRel);
+        if (inverse)
+        {
+            (riskCtrl, riskTrt) = (riskTrt, riskCtrl);
+        }
+
+        return new BayesianComparison(
+            null,
+            chanceToWin,
+            muRel,
+            muAbs,
+            muRel - zHalf * seRel,
+            muRel + zHalf * seRel,
+            riskCtrl,
+            riskTrt,
+            priorApplied);
+    }
+
+    private static BayesianComparison DeterministicComparison(double muRel, double muAbs, bool inverse)
+    {
+        var chanceToWin = muRel switch
+        {
+            > 0 => 1,
+            < 0 => 0,
+            _ => 0.5
+        };
+
+        if (inverse)
+        {
+            chanceToWin = 1 - chanceToWin;
+        }
+
+        var riskCtrl = muRel > 0 ? muRel : 0;
+        var riskTrt = muRel < 0 ? -muRel : 0;
+        if (inverse)
+        {
+            (riskCtrl, riskTrt) = (riskTrt, riskCtrl);
+        }
+
+        return new BayesianComparison(
+            null,
+            chanceToWin,
+            muRel,
+            muAbs,
+            muRel,
+            muRel,
+            riskCtrl,
+            riskTrt,
+            false);
+    }
+
+    private static double DeltaMethodSe(
+        double meanA,
+        double varA,
+        long nA,
+        double meanB,
+        double varB,
+        long nB,
+        bool relative)
+    {
+        if (relative)
+        {
+            if (meanA == 0)
+            {
+                return 0;
+            }
+
+            return Math.Sqrt(
+                varB / (nB * Math.Pow(meanA, 2)) +
+                varA * Math.Pow(meanB, 2) / (nA * Math.Pow(meanA, 4)));
+        }
+
+        return Math.Sqrt(varB / nB + varA / nA);
+    }
+
+    private static (double RiskCtrl, double RiskTrt) Risk(double mu, double sigma)
+    {
+        var pCtrlBetter = NormalCdf(0, mu, sigma);
+        var meanNegative = TruncatedNormalMean(mu, sigma, double.NegativeInfinity, 0);
+        var meanPositive = TruncatedNormalMean(mu, sigma, 0, double.PositiveInfinity);
+
+        return ((1 - pCtrlBetter) * meanPositive, -pCtrlBetter * meanNegative);
+    }
+
+    private static double SrmCheck(long[] observed)
+    {
+        var total = observed.Sum();
+        if (total == 0)
+        {
+            return 1.0;
+        }
+
+        var expected = total / (double)observed.Length;
+        var chiSquared = observed.Sum(value => Math.Pow(value - expected, 2) / expected);
+        return Chi2Sf(chiSquared, observed.Length - 1);
+    }
+
+    private static double Chi2Sf(double x, int degreesOfFreedom)
+    {
+        if (x <= 0)
+        {
+            return 1.0;
+        }
+
+        return 1.0 - RegularizedGammaP(degreesOfFreedom / 2.0, x / 2.0);
+    }
+
+    private static double RegularizedGammaP(double a, double x)
+    {
+        if (x <= 0)
+        {
+            return 0;
+        }
+
+        return x < a + 1 ? GammaPSeries(a, x) : 1.0 - GammaQContinuedFraction(a, x);
+    }
+
+    private static double GammaPSeries(double a, double x)
+    {
+        var logGammaA = LogGamma(a);
+        var sum = 1.0 / a;
+        var term = 1.0 / a;
+        for (var n = 1; n < 200; n++)
+        {
+            term *= x / (a + n);
+            sum += term;
+            if (Math.Abs(term) < Math.Abs(sum) * 1e-14)
+            {
+                break;
+            }
+        }
+
+        return sum * Math.Exp(-x + a * Math.Log(x) - logGammaA);
+    }
+
+    private static double GammaQContinuedFraction(double a, double x)
+    {
+        var logGammaA = LogGamma(a);
+        const double tiny = 1e-30;
+        var b = x + 1 - a;
+        var c = 1.0 / tiny;
+        var d = 1.0 / b;
+        var h = d;
+
+        for (var n = 1; n < 200; n++)
+        {
+            var an = -n * (n - a);
+            b += 2;
+            d = an * d + b;
+            if (Math.Abs(d) < tiny)
+            {
+                d = tiny;
+            }
+
+            c = b + an / c;
+            if (Math.Abs(c) < tiny)
+            {
+                c = tiny;
+            }
+
+            d = 1.0 / d;
+            var delta = d * c;
+            h *= delta;
+            if (Math.Abs(delta - 1.0) < 1e-14)
+            {
+                break;
+            }
+        }
+
+        return h * Math.Exp(-x + a * Math.Log(x) - logGammaA);
+    }
+
+    private static double LogGamma(double x)
+    {
+        double[] coefficients =
+        [
+            0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+            771.32342877765313, -176.61502916214059, 12.507343278686905,
+            -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7
+        ];
+
+        if (x < 0.5)
+        {
+            return Math.Log(Math.PI / Math.Sin(Math.PI * x)) - LogGamma(1 - x);
+        }
+
+        x -= 1;
+        var sum = coefficients[0];
+        for (var i = 1; i <= 8; i++)
+        {
+            sum += coefficients[i] / (x + i);
+        }
+
+        var t = x + 7.5;
+        return 0.5 * Math.Log(2 * Math.PI) + (x + 0.5) * Math.Log(t) - t + Math.Log(sum);
+    }
+
+    private static double NormalCdf(double x, double mu = 0, double sigma = 1)
+    {
+        return 0.5 * (1 + Erf((x - mu) / (sigma * Math.Sqrt(2))));
+    }
+
+    private static double NormalSf(double x, double mu = 0, double sigma = 1)
+    {
+        return 1 - NormalCdf(x, mu, sigma);
+    }
+
+    private static double NormalPdf(double x, double mu = 0, double sigma = 1)
+    {
+        var z = (x - mu) / sigma;
+        return Math.Exp(-0.5 * z * z) / (sigma * Math.Sqrt(2 * Math.PI));
+    }
+
+    private static double NormalPpf(double p)
+    {
+        if (p <= 0)
+        {
+            return double.NegativeInfinity;
+        }
+
+        if (p >= 1)
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (p == 0.5)
+        {
+            return 0;
+        }
+
+        double[] a =
+        [
+            -3.969683028665376e1, 2.209460984245205e2, -2.759285104469687e2,
+            1.383577518672690e2, -3.066479806614716e1, 2.506628277459239e0
+        ];
+        double[] b =
+        [
+            -5.447609879822406e1, 1.615858368580409e2, -1.556989798598866e2,
+            6.680131188771972e1, -1.328068155288572e1
+        ];
+        double[] c =
+        [
+            -7.784894002430293e-3, -3.223964580411365e-1, -2.400758277161838e0,
+            -2.549732539343734e0, 4.374664141464968e0, 2.938163982698783e0
+        ];
+        double[] d =
+        [
+            7.784695709041462e-3, 3.224671290700398e-1, 2.445134137142996e0,
+            3.754408661907416e0
+        ];
+
+        const double pLow = 0.02425;
+        var pHigh = 1 - pLow;
+        double q;
+
+        if (p < pLow)
+        {
+            q = Math.Sqrt(-2 * Math.Log(p));
+            return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+                ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+        }
+
+        if (p <= pHigh)
+        {
+            q = p - 0.5;
+            var r = q * q;
+            return ((((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q) /
+                (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+        }
+
+        q = Math.Sqrt(-2 * Math.Log(1 - p));
+        return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+    }
+
+    private static double TruncatedNormalMean(double mu, double sigma, double a, double b)
+    {
+        var phiAlpha = double.IsFinite(a) ? NormalPdf((a - mu) / sigma) : 0;
+        var phiBeta = double.IsFinite(b) ? NormalPdf((b - mu) / sigma) : 0;
+        var cdfAlpha = double.IsFinite(a) ? NormalCdf((a - mu) / sigma) : 0;
+        var cdfBeta = double.IsFinite(b) ? NormalCdf((b - mu) / sigma) : 1;
+        var denominator = cdfBeta - cdfAlpha;
+        return denominator <= 0 ? mu : mu + sigma * (phiAlpha - phiBeta) / denominator;
+    }
+
+    private static double Erf(double x)
+    {
+        var sign = x >= 0 ? 1 : -1;
+        var absolute = Math.Abs(x);
+        const double a1 = 0.254829592;
+        const double a2 = -0.284496736;
+        const double a3 = 1.421413741;
+        const double a4 = -1.453152027;
+        const double a5 = 1.061405429;
+        const double p = 0.3275911;
+        var t = 1.0 / (1.0 + p * absolute);
+        var y = 1.0 - (((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t) *
+            Math.Exp(-absolute * absolute);
+        return sign * y;
+    }
+
+    private static double GetDouble(Dictionary<string, object> data, string key)
+    {
+        return TryGetDouble(data, key, out var value) ? value : 0;
+    }
+
+    private static bool TryGetDouble(Dictionary<string, object> data, string key, out double value)
+    {
+        value = 0;
+        if (!data.TryGetValue(key, out var raw))
+        {
+            return false;
+        }
+
+        switch (raw)
+        {
+            case double d:
+                value = d;
+                return true;
+            case float f:
+                value = f;
+                return true;
+            case decimal m:
+                value = (double)m;
+                return true;
+            case int i:
+                value = i;
+                return true;
+            case long l:
+                value = l;
+                return true;
+            case JsonElement element when element.ValueKind == JsonValueKind.Number && element.TryGetDouble(out var d):
+                value = d;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static bool TryGetBool(Dictionary<string, object> data, string key)
+    {
+        if (!data.TryGetValue(key, out var raw))
+        {
+            return false;
+        }
+
+        return raw switch
+        {
+            bool b => b,
+            JsonElement element => element.ValueKind == JsonValueKind.True,
+            _ => false
+        };
+    }
+
+    private static double Round(double value, int decimals)
+    {
+        var factor = Math.Pow(10, decimals);
+        return Math.Round(value * factor) / factor;
+    }
+
+    private sealed record GuardrailDefinition(string Event, string MetricType, string MetricAgg, bool Inverse, string Key, Guid MetricId, string MetricKey);
+
+    private sealed record GaussianPrior(double Mean, double Variance, bool Proper);
+
+    private sealed record BayesianComparison(
+        string? Error,
+        double ChanceToWin,
+        double RelativeChange,
+        double AbsoluteChange,
+        double CiRelLower,
+        double CiRelUpper,
+        double RiskCtrl,
+        double RiskTrt,
+        bool PriorApplied)
+    {
+        public static BayesianComparison Failed(string error)
+        {
+            return new BayesianComparison(error, 0, 0, 0, 0, 0, 0, 0, false);
+        }
+    }
+
+    private static bool IsDecreaseGood(string? value)
+    {
+        return value == "decrease_good";
+    }
+
+    private static void SetIfNotNull(
+        List<UpdateDefinition<Experiment>> updates,
+        System.Linq.Expressions.Expression<Func<Experiment, string>> field,
+        string value)
+    {
+        if (value != null)
+        {
+            updates.Add(Builders<Experiment>.Update.Set(field, value.Trim()));
+        }
     }
 }

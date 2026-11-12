@@ -1,40 +1,26 @@
-using Api.Authentication;
-using Domain.Policies;
-
 namespace Api.Authorization;
 
-public class PermissionRequirementHandler : AuthorizationHandler<PermissionRequirement>
+public class PermissionRequirementHandler(IPermissionChecker permissionChecker)
+    : AuthorizationHandler<PermissionRequirement>
 {
-    private readonly IPermissionChecker _permissionChecker;
-
-    public PermissionRequirementHandler(IPermissionChecker permissionChecker)
-    {
-        _permissionChecker = permissionChecker;
-    }
-
-    protected override Task HandleRequirementAsync(
+    protected override async Task HandleRequirementAsync(
         AuthorizationHandlerContext context,
         PermissionRequirement requirement)
     {
         if (context.Resource is not HttpContext httpContext)
         {
-            return Task.CompletedTask;
+            return;
         }
 
-        if (httpContext.User.Identity?.AuthenticationType == Schemes.JwtBearer)
+        // unauthenticated users have no permissions
+        if (context.User.Identity?.IsAuthenticated != true)
+        {
+            return;
+        }
+
+        if (await permissionChecker.IsGrantedAsync(httpContext, requirement))
         {
             context.Succeed(requirement);
-            return Task.CompletedTask;
         }
-
-        if (httpContext.Items[OpenApiConstants.PermissionStoreKey] is IEnumerable<PolicyStatement> permissions)
-        {
-            if (_permissionChecker.IsGranted(permissions, requirement))
-            {
-                context.Succeed(requirement);
-            }
-        }
-
-        return Task.CompletedTask;
     }
 }

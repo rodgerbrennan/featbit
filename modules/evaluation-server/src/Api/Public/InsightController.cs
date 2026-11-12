@@ -1,64 +1,51 @@
-using Api.Setup;
+using Api.Authorization;
+using Microsoft.AspNetCore.Authorization;
+using Api.RateLimiting;
 using Domain.EndUsers;
 using Domain.Insights;
 using Domain.Messages;
+using Domain.Usages;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Caching.Memory;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Api.Public;
 
-public class InsightController : PublicApiControllerBase
+[Route("api/public/insight")]
+[EnableRateLimiting(RateLimitingPolicies.Insight)]
+public class InsightController(IMessageProducer producer, EndUserDeduplicator endUserDeduplicator)
+    : ApiControllerBase
 {
-    private readonly IMessageProducer _producer;
-    private readonly MemoryCache _cache;
-    private readonly MemoryCacheEntryOptions _cacheEntryOptions;
-
-    public InsightController(IMessageProducer producer, BoundedMemoryCache boundedMemoryCache)
-    {
-        _producer = producer;
-        _cache = boundedMemoryCache.Instance;
-        _cacheEntryOptions = new MemoryCacheEntryOptions
-        {
-            Size = 1,
-            AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(3)
-        };
-    }
-
     [HttpPost("track")]
-    public async Task<IActionResult> TrackAsync(ICollection<Insight> insights)
+    [Authorize(SecretPolicies.ServerOrClient)]
+    public async Task<IActionResult> TrackAsync(ICollection<Insight?> insights)
     {
-        if (!Authenticated)
-        {
-            return Unauthorized();
-        }
-
-        var validInsights = insights.Where(x => x.IsValid()).ToArray();
-        if (!validInsights.Any())
+        var validInsights = insights.Where(x => x != null && x.IsValid()).ToArray();
+        if (validInsights.Length == 0)
         {
             return Ok();
         }
 
-        var envId = EnvId;
+        var envIdString = EnvId.ToString();
 
-        var endUserMessages = new List<EndUserMessage>();
-        var insightMessages = new List<InsightMessage>();
+        var endUserMessages = new List<EndUserMessage>(validInsights.Length);
+        var insightMessages = new List<InsightMessage>(validInsights.Length);
+        var usage = new InsightUsage(EnvId);
         foreach (var insight in validInsights)
         {
-            var key = $"{envId:N}:{insight.User!.KeyId}";
-            if (!_cache.TryGetValue(key, out _))
+            if (endUserDeduplicator.TryMarkAsReported(EnvId, insight!.User!.KeyId))
             {
-                _cache.Set(key, string.Empty, _cacheEntryOptions);
-                endUserMessages.Add(insight.EndUserMessage(envId));
+                endUserMessages.Add(insight.EndUserMessage(EnvId));
+                usage.AddUser(insight.User!.KeyId);
             }
 
-            insightMessages.AddRange(insight.InsightMessages(envId));
+            insight.AppendInsightMessages(envIdString, insightMessages);
+            usage.AddEvents(insight.Variations?.Length ?? 0, insight.Metrics?.Length ?? 0);
         }
 
         await Task.WhenAll(
-            endUserMessages.Select(x => _producer.PublishAsync(Topics.EndUser, x))
-        );
-        await Task.WhenAll(
-            insightMessages.Select(x => _producer.PublishAsync(Topics.Insights, x))
+            producer.PublishBatchAsync(Topics.EndUser, endUserMessages),
+            producer.PublishBatchAsync(Topics.Insights, insightMessages),
+            producer.PublishAsync(Topics.Usage, usage)
         );
 
         return Ok();

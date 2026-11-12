@@ -1,25 +1,36 @@
+using Application.Caches;
+using Application.Bases.Exceptions;
 using Application.FeatureFlags;
+using Domain.AuditLogs;
+using Domain.Segments;
+using Domain.SemanticPatch;
 using MediatR;
 
 namespace Infrastructure.AppService;
 
 public class FeatureFlagAppService : IFeatureFlagAppService
 {
-    private readonly IFeatureFlagService _featureFlagService;
+    private readonly IFeatureFlagService _flagService;
     private readonly IFlagDraftService _flagDraftService;
+    private readonly IAuditLogService _auditLogService;
+    private readonly ICacheService _cacheService;
     private readonly IPublisher _publisher;
 
     public FeatureFlagAppService(
         IFeatureFlagService featureFlagService,
         IFlagDraftService flagDraftService,
+        IAuditLogService auditLogService,
+        ICacheService cacheService,
         IPublisher publisher)
     {
-        _featureFlagService = featureFlagService;
+        _flagService = featureFlagService;
         _flagDraftService = flagDraftService;
+        _auditLogService = auditLogService;
+        _cacheService = cacheService;
         _publisher = publisher;
     }
 
-    public async Task ApplyDraftAsync(Guid draftId, string operation, Guid operatorId)
+    public async Task ApplyDraftAsync(Guid workspaceId, Guid orgId, Guid draftId, string operation, Guid operatorId)
     {
         // check draft status
         var draft = await _flagDraftService.GetAsync(draftId);
@@ -29,18 +40,61 @@ public class FeatureFlagAppService : IFeatureFlagAppService
         }
 
         // apply flag draft
-        var flag = await _featureFlagService.GetAsync(draft.FlagId);
-        var dataChange = flag.ApplyDraft(draft);
-        await _featureFlagService.UpdateAsync(flag);
+        var flag = await _flagService.GetAsync(draft.FlagId);
+        DataChange dataChange;
+        try
+        {
+            dataChange = flag.ApplyDraft(draft);
+        }
+        catch (FlagInstructionConflictException)
+        {
+            throw new ConflictException(nameof(Domain.FeatureFlags.FeatureFlag), flag.Id);
+        }
+
+        await _flagService.UpdateAsync(flag);
 
         // update draft status
         draft.Applied(operatorId);
         await _flagDraftService.UpdateAsync(draft);
 
         // publish on feature flag change notification
-        var notification = new OnFeatureFlagChanged(
-            flag, operation, dataChange, operatorId, draft.Comment
+        var notification = new OnFeatureFlagChanged(flag, workspaceId, orgId, operation, dataChange, operatorId, draft.Comment
         );
         await _publisher.Publish(notification);
+    }
+
+    public async Task OnSegmentUpdatedAsync(Guid workspaceId, Guid? orgId, Segment segment, Guid operatorId, ICollection<FlagReference> flagReferences)
+    {
+        // mark flags as updated
+        var flagIds = flagReferences.Select(x => x.Id).ToArray();
+        await _flagService.MarkAsUpdatedAsync(flagIds, operatorId);
+
+        List<AuditLog> auditLogs = [];
+
+        var flags = await _flagService.FindManyAsync(x => flagIds.Contains(x.Id));
+        foreach (var flag in flags)
+        {
+            var dataChange = new DataChange(flag);
+            flag.ReferencedSegmentTargetingUpdated(operatorId);
+            dataChange.To(flag);
+
+            // update flag cache
+            await _cacheService.UpsertFlagAsync(flag);
+
+            var auditLog = AuditLog.For(
+                flag,
+                workspaceId,
+                orgId,
+                Operations.Update,
+                dataChange,
+                $"Referenced segment '{segment.Name}' has been updated.",
+                operatorId
+            );
+
+            auditLogs.Add(auditLog);
+        }
+
+        // write audit logs
+        await _auditLogService.AddManyAsync(auditLogs);
     }
 }

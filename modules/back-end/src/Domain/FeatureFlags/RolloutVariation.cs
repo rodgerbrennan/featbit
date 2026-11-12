@@ -4,11 +4,40 @@ namespace Domain.FeatureFlags;
 
 public class RolloutVariation
 {
+    /// <summary>
+    /// The ID of the served variation.
+    /// </summary>
     public string Id { get; set; }
 
+    /// <summary>
+    /// The rollout range for the variation.
+    /// </summary>
     public double[] Rollout { get; set; }
 
+    /// <summary>
+    /// The rollout percentage for experiments.
+    /// </summary>
     public double ExptRollout { get; set; }
+
+    public bool IsValid(ICollection<Variation> flagVariations)
+    {
+        if (flagVariations.IsNullOrEmpty())
+        {
+            return false;
+        }
+
+        if (flagVariations.All(variation => variation.Id != Id))
+        {
+            return false;
+        }
+
+        return Rollout is { Length: 2 } &&
+               double.IsFinite(Rollout[0]) &&
+               double.IsFinite(Rollout[1]) &&
+               Rollout[0] >= 0 &&
+               Rollout[0] <= Rollout[1] &&
+               Rollout[1] <= 1;
+    }
 
     public bool IsEmpty()
     {

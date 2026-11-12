@@ -1,14 +1,16 @@
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using Application.Caches;
 using Domain.AuditLogs;
-using Domain.Messages;
 using Domain.Segments;
+using Microsoft.Extensions.Configuration;
 
 namespace Application.Segments;
 
 public class OnSegmentChange : INotification
 {
+    public Guid WorkspaceId { get; }
+
+    public Guid? OrganizationId { get; }
+
     public Segment Segment { get; set; }
 
     public string Operation { get; set; }
@@ -19,93 +21,70 @@ public class OnSegmentChange : INotification
 
     public string Comment { get; set; }
 
+    public bool IsTargetingChange { get; set; }
+
     public OnSegmentChange(
         Segment segment,
+        Guid workspaceId,
+        Guid? organizationId,
         string operation,
         DataChange dataChange,
         Guid operatorId,
-        string comment = "")
+        string comment = "",
+        bool isTargetingChange = false)
     {
+        WorkspaceId = workspaceId;
+        OrganizationId = organizationId;
         Segment = segment;
         Operation = operation;
         DataChange = dataChange;
         OperatorId = operatorId;
         Comment = comment;
+        IsTargetingChange = isTargetingChange;
     }
 
     public AuditLog GetAuditLog()
     {
-        var auditLog = AuditLog.For(Segment, Operation, DataChange, Comment, OperatorId);
+        var auditLog = AuditLog.For(Segment, WorkspaceId, OrganizationId, Operation, DataChange, Comment, OperatorId);
 
         return auditLog;
     }
 }
 
-public class OnSegmentChangeHandler : INotificationHandler<OnSegmentChange>
+public class OnSegmentChangeHandler(
+    ISegmentService segmentService,
+    ICacheService cache,
+    IAuditLogService auditLogService,
+    IWebhookHandler webhookHandler,
+    ISegmentChangePublisher segmentChangePublisher,
+    IConfiguration configuration)
+    : INotificationHandler<OnSegmentChange>
 {
-    private readonly ISegmentService _segmentService;
-    private readonly IMessageProducer _messageProducer;
-    private readonly ICacheService _cache;
-    private readonly IAuditLogService _auditLogService;
-    private readonly IWebhookHandler _webhookHandler;
-
-    public OnSegmentChangeHandler(
-        ISegmentService segmentService,
-        IMessageProducer messageProducer,
-        ICacheService cache,
-        IAuditLogService auditLogService,
-        IWebhookHandler webhookHandler)
-    {
-        _segmentService = segmentService;
-        _messageProducer = messageProducer;
-        _cache = cache;
-        _auditLogService = auditLogService;
-        _webhookHandler = webhookHandler;
-    }
-
     public async Task Handle(OnSegmentChange notification, CancellationToken cancellationToken)
     {
         // write audit log
-        await _auditLogService.AddOneAsync(notification.GetAuditLog());
+        await auditLogService.AddOneAsync(notification.GetAuditLog());
 
         var segment = notification.Segment;
-        var envIds = await _segmentService.GetEnvironmentIdsAsync(segment);
+        var envIds = await segmentService.GetEnvironmentIdsAsync(segment);
 
         // update cache
-        await _cache.UpsertSegmentAsync(envIds, segment);
+        await cache.UpsertSegmentAsync(envIds, segment);
 
-        foreach (var envId in envIds)
+        await segmentChangePublisher.PublishAsync(notification);
+
+        if (!configuration.UseControlPlane())
         {
-            // publish segment change message
-            await PublishSegmentChangeMessage(envId);
-
-            // handle webhook
-            _ = _webhookHandler.HandleAsync(
-                envId,
-                segment,
-                notification.DataChange,
-                notification.OperatorId
-            );
-        }
-
-        return;
-
-        async Task PublishSegmentChangeMessage(Guid envId)
-        {
-            var hasNoFlagReferences =
-                notification.Operation is Operations.Archive or Operations.Restore or Operations.Create;
-
-            var flagReferences = hasNoFlagReferences
-                ? []
-                : await _segmentService.GetFlagReferencesAsync(envId, segment.Id);
-
-            JsonObject message = new()
+            foreach (var envId in envIds)
             {
-                ["segment"] = segment.SerializeAsEnvironmentSpecific(envId),
-                ["affectedFlagIds"] = JsonSerializer.SerializeToNode(flagReferences.Select(x => x.Id))
-            };
-
-            await _messageProducer.PublishAsync(Topics.SegmentChange, message);
+                // handle webhook asynchronously
+                _ = webhookHandler.HandleAsync(
+                    envId,
+                    segment,
+                    notification.DataChange,
+                    notification.OperatorId
+                );
+            }
         }
     }
 }

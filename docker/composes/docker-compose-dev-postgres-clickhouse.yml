@@ -10,6 +10,7 @@ services:
       - API_URL=http://localhost:5000
       - DEMO_URL=http://localhost:5173
       - EVALUATION_URL=http://localhost:5100
+      - BASE_HREF=/
     depends_on:
       - api-server
       - demo-dino-game-vue
@@ -32,11 +33,11 @@ services:
       - Kafka__Producer__bootstrap.servers=kafka:9092
       - Kafka__Consumer__bootstrap.servers=kafka:9092
       - Redis__ConnectionString=redis:6379
-      - OLAP__ServiceHost=http://da-server
+      - Jwt__Algorithm=HS256
+      - Jwt__Key=please_change_me_to_a_secure_secret_key
     depends_on:
       - postgresql
       - redis
-      - da-server
     ports:
       - "5000:5000"
     networks:
@@ -64,28 +65,8 @@ services:
     networks:
       - featbit-network
 
-  da-server:
-    image: featbit/data-analytics-server:dev
-    container_name: data-analytics-server
-    build:
-      context: ./modules/data-analytics
-      dockerfile: ./Dockerfile
-    depends_on:
-      - kafka
-      - clickhouse-server
-    ports:
-      - "8200:80"
-    networks:
-      - featbit-network
-    environment:
-      DB_PROVIDER: ClickHouse
-      KAFKA_HOSTS: kafka:9092
-      CLICKHOUSE_HOST: clickhouse-server
-      CLICKHOUSE_KAFKA_HOSTS: kafka:9092
-      CHECK_DB_LIVNESS: true
-
   kafka:
-    image: bitnami/kafka:3.5
+    image: bitnamilegacy/kafka:3.5
     restart: on-failure
     ports:
       - '9092:9092'
@@ -120,7 +101,7 @@ services:
       - featbit-network
   
   init-kafka-topics:
-    image: bitnami/kafka:3.5
+    image: bitnamilegacy/kafka:3.5
     depends_on:
       kafka:
         condition: service_started
@@ -157,6 +138,7 @@ services:
     volumes:
       - ./infra/clickhouse/single_node/config.xml:/etc/clickhouse-server/config.xml
       - ./infra/clickhouse/users.xml:/etc/clickhouse-server/users.xml
+      - ./infra/clickhouse/docker-entrypoint-initdb.d/:/docker-entrypoint-initdb.d/:ro
       - clickhouse-server:/var/lib/clickhouse
 
   postgresql:
@@ -175,7 +157,7 @@ services:
       - featbit-network
 
   redis:
-    image: bitnami/redis:6.2.10
+    image: bitnamilegacy/redis:6.2.10
     container_name: redis
     restart: on-failure
     environment:
@@ -208,4 +190,3 @@ volumes:
   kafka:
   postgres_data:
   clickhouse-server:
-

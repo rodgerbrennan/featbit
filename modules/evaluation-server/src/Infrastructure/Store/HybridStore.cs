@@ -1,3 +1,4 @@
+using Domain.Secrets;
 using Domain.Shared;
 using Microsoft.Extensions.Logging;
 
@@ -40,7 +41,7 @@ public class HybridStore : IStore
     public async Task<IEnumerable<byte[]>> GetFlagsAsync(Guid envId, long timestamp) =>
         await AvailableStore.GetFlagsAsync(envId, timestamp);
 
-    public async Task<IEnumerable<byte[]>> GetFlagsAsync(IEnumerable<string> ids) =>
+    public async Task<IEnumerable<byte[]>> GetFlagsAsync(string[] ids) =>
         await AvailableStore.GetFlagsAsync(ids);
 
     public async Task<byte[]> GetSegmentAsync(string id) =>

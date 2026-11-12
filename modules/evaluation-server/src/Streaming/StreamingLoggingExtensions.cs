@@ -4,15 +4,15 @@ namespace Streaming;
 
 internal static partial class StreamingLoggingExtensions
 {
-    [LoggerMessage(1, LogLevel.Warning, "Streaming request was rejected: {Request}. Reason: {Reason}.",
+    [LoggerMessage(1, LogLevel.Warning, "Streaming request was rejected. Reason: {Reason}.",
         EventName = "RequestRejected")]
-    public static partial void RequestRejected(this ILogger logger, string? request, string reason);
+    public static partial void RequestRejected(this ILogger logger, string reason);
 
-    [LoggerMessage(2, LogLevel.Error, "Failed to resolve host for IP address: {IpAddress}.",
+    [LoggerMessage(2, LogLevel.Debug, "Failed to resolve host for IP address: {IpAddress}.",
         EventName = "FailedToResolveHost")]
-    public static partial void FailedToResolveHost(this ILogger logger, string ipAddress);
+    public static partial void FailedToResolveHost(this ILogger logger, string ipAddress, Exception ex);
 
-    [LoggerMessage(3, LogLevel.Error, "Exception occurred while validating request: {Request}.",
-        EventName = "ErrorValidateRequest")]
-    public static partial void ErrorValidateRequest(this ILogger logger, string? request, Exception ex);
+    [LoggerMessage(6, LogLevel.Error, "Streaming request validation unavailable. Reason: {Reason}.",
+        EventName = "RequestValidationUnavailable")]
+    public static partial void RequestValidationUnavailable(this ILogger logger, string reason, Exception? ex);
 }

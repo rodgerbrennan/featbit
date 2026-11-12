@@ -14,6 +14,11 @@ public class SegmentComparer
             return Array.Empty<SegmentInstruction>();
         }
 
+        if (string.Equals(change.Previous, change.Current, StringComparison.Ordinal))
+        {
+            return Array.Empty<SegmentInstruction>();
+        }
+
         var original = JsonSerializer.Deserialize<Segment>(change.Previous, ReusableJsonSerializerOptions.Web);
         var current = JsonSerializer.Deserialize<Segment>(change.Current, ReusableJsonSerializerOptions.Web);
 
@@ -28,6 +33,7 @@ public class SegmentComparer
 
         instructions.Add(CompareName(original.Name, current.Name));
         instructions.Add(CompareDescription(original.Description, current.Description));
+        instructions.AddRange(CompareTags(original.Tags, current.Tags));
 
         instructions.AddRange(CompareTargetUsers("included", original.Included, current.Included));
         instructions.AddRange(CompareTargetUsers("excluded", original.Excluded, current.Excluded));
@@ -69,6 +75,25 @@ public class SegmentComparer
 
         var instruction = new SegmentDescriptionInstruction(current);
         return instruction;
+    }
+
+    public static IEnumerable<SegmentInstruction> CompareTags(ICollection<string> original, ICollection<string> current)
+    {
+        var removedTags = original.Except(current).ToArray();
+        var addedTags = current.Except(original).ToArray();
+
+        var instructions = new List<SegmentInstruction>();
+        if (removedTags.Any())
+        {
+            instructions.Add(new SegmentTagsInstruction(SegmentInstructionKind.RemoveTags, removedTags));
+        }
+
+        if (addedTags.Any())
+        {
+            instructions.Add(new SegmentTagsInstruction(SegmentInstructionKind.AddTags, addedTags));
+        }
+
+        return instructions;
     }
 
     public static IEnumerable<SegmentInstruction> CompareTargetUsers(

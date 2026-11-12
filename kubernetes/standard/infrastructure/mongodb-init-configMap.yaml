@@ -68,6 +68,7 @@ data:
             _id: organizationId,
             workspaceId: workspaceId,
             name: "playground",
+            key: "playground",
             initialized: false,
             createdAt: new Date(),
             updatedAt: new Date()
@@ -90,6 +91,22 @@ data:
         }
     )
     print('collection seeded: OrganizationUsers')
+
+    // seed workspace users (links the seeded user to the seeded workspace).
+    // Without this row, /api/v1/user/workspaces returns empty and the front-end
+    // auth guard silently logs the user out after login.
+    print('clean and seed collection: WorkspaceUsers')
+    db.WorkspaceUsers.deleteMany({})
+    db.WorkspaceUsers.insertOne(
+        {
+            _id: UUID(),
+            workspaceId: workspaceId,
+            userId: userId,
+            createdAt: new Date(),
+            updatedAt: new Date()
+        }
+    )
+    print('collection seeded: WorkspaceUsers')
 
     // seed system managed policies
     print('clean and seed collection: Policies')
@@ -179,7 +196,8 @@ data:
                         "UpdateEnvSettings",
                         "CreateEnvSecret",
                         "DeleteEnvSecret",
-                        "UpdateEnvSecret"
+                        "UpdateEnvSecret",
+                        "ViewEnvSecret"
                     ],
                     resources: ["project/*:env/*"]
                 }
@@ -225,6 +243,13 @@ data:
                         "CanAccessProject"
                     ],
                     resources: ["project/*"]
+                },
+                {
+                    _id: getUUIDString(),
+                    resourceType: "env",
+                    effect: "allow",
+                    actions: ["CanAccessEnv", "ViewEnvSecret"],
+                    resources: ["project/*:env/*"]
                 }
             ],
             createdAt: new Date(),
@@ -251,9 +276,12 @@ data:
     // add indexes
     print('add indexes...')
     db.AuditLogs.createIndex({ createdAt: 1 });
+    db.EndUsers.createIndex({ envId: 1, keyId: 1 });
     db.EndUsers.createIndex({ updatedAt: 1 });
     db.ExperimentMetrics.createIndex({ updatedAt: 1 });
     db.FeatureFlags.createIndex({ updatedAt: 1 });
+    db.FeatureFlags.createIndex({ createdAt: 1 });
+    db.FeatureFlags.createIndex({ key: 1 });
     db.Segments.createIndex({ updatedAt: 1 });
     db.AccessTokens.createIndex({ createdAt: 1 });
     db.Policies.createIndex({ createdAt: 1 });
@@ -261,4 +289,5 @@ data:
     db.RelayProxies.createIndex({ createdAt: 1 });
     db.Webhooks.createIndex({ createdAt: 1 });
     db.Webhooks.createIndex({ startedAt: 1 });
+    db.WebhookDeliveries.createIndex({ startedAt: 1 });
     print('indexes added')

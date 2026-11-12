@@ -16,6 +16,7 @@ public class SsoController : ApiControllerBase
     private readonly IUserService _userService;
     private readonly IIdentityService _identityService;
     private readonly IWorkspaceService _workspaceService;
+    private readonly IOrganizationService _organizationService;
     private readonly ILogger<SsoController> _logger;
 
     public SsoController(
@@ -23,6 +24,7 @@ public class SsoController : ApiControllerBase
         IUserService userService,
         IIdentityService identityService,
         IWorkspaceService workspaceService,
+        IOrganizationService organizationService,
         IConfiguration configuration,
         ILogger<SsoController> logger)
     {
@@ -32,6 +34,7 @@ public class SsoController : ApiControllerBase
         _userService = userService;
         _identityService = identityService;
         _workspaceService = workspaceService;
+        _organizationService = organizationService;
         _logger = logger;
     }
 
@@ -72,20 +75,27 @@ public class SsoController : ApiControllerBase
                 );
             }
 
-            LoginToken token;
-            var user = await _userService.FindOneAsync(x => x.Email == email && x.WorkspaceId == workspace.Id);
+            var user = await _userService.FindOneAsync(x => x.Email == email);
             if (user == null)
             {
                 var registerResult =
-                    await _identityService.RegisterByEmailAsync(workspace.Id, email, string.Empty, UserOrigin.Sso);
-                token = new LoginToken(true, registerResult.Token);
-            }
-            else
-            {
-                token = new LoginToken(false, _identityService.IssueToken(user));
+                    await _identityService.RegisterByEmailAsync(email, string.Empty, UserOrigin.Sso);
+
+                user = registerResult.User;
             }
 
-            return Ok(token);
+            // ensure the user is in the workspace
+            await _workspaceService.AddUserIfNotExistsAsync(workspace.Id, user.Id);
+
+            // The frontend uses IsSsoFirstLogin to decide whether to prompt the user to join an organization.
+            var organizations = await _organizationService.GetUserOrganizationsAsync(workspace.Id, user.Id);
+            var isSsoFirstLogin = organizations.Count == 0;
+
+            var (accessToken, refreshToken) =
+                await _identityService.IssueTokensAsync(user, Request.ClientIpAddress());
+            Response.SetRefreshTokenCookie(refreshToken);
+
+            return Ok(new LoginToken(isSsoFirstLogin, accessToken));
         }
         catch (Exception ex)
         {

@@ -3,35 +3,40 @@ using System.Text.Json.Nodes;
 using Domain.EndUsers;
 using Domain.Evaluation;
 using Domain.Shared;
+using Microsoft.Extensions.Logging;
 using Streaming.Connections;
 using Streaming.Protocol;
 
 namespace Streaming.Services;
 
-public class DataSyncService : IDataSyncService
+public class DataSyncService(
+    IStore store,
+    IEvaluator evaluator,
+    IRelayProxyService rpService,
+    ILogger<DataSyncService> logger) : IDataSyncService
 {
-    private readonly IStore _store;
-    private readonly IEvaluator _evaluator;
+    private const long FullSyncTimestamp = 0;
 
-    public DataSyncService(IStore store, IEvaluator evaluator)
-    {
-        _store = store;
-        _evaluator = evaluator;
-    }
-
-    public async Task<object> GetPayloadAsync(ConnectionContext connectionContext, DataSyncMessage message)
+    public async Task<object> GetPayloadAsync(ConnectionContext connectionContext, JsonElement request)
     {
         var connection = connectionContext.Connection;
-        var rpConnections = connectionContext.MappedRpConnections;
 
-        // if timestamp is null or not specified, treat as 0 (default value)
-        var timestamp = message.Timestamp.GetValueOrDefault();
+        long timestamp;
+        if (request.TryGetProperty("timestamp", out var timestampProp))
+        {
+            timestampProp.TryGetInt64(out timestamp);
+        }
+        else
+        {
+            // if timestamp is null or not specified, treat as FullSyncTimestamp (default value)
+            timestamp = FullSyncTimestamp;
+        }
 
         object payload = connectionContext.Type switch
         {
             ConnectionType.Client => await GetClientSdkPayloadAsync(connection.EnvId, connection.User!, timestamp),
             ConnectionType.Server => await GetServerSdkPayloadAsync(connection.EnvId, timestamp),
-            ConnectionType.RelayProxy => await GetRelayProxyPayloadAsync(rpConnections.Select(x => x.EnvId), timestamp),
+            ConnectionType.RelayProxy => await GetRelayProxyPayloadAsync(connectionContext, timestamp, request),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(connection.Type), $"unsupported connection type {connection.Type}"
             )
@@ -42,35 +47,27 @@ public class DataSyncService : IDataSyncService
 
     public async Task<ClientSdkPayload> GetClientSdkPayloadAsync(Guid envId, EndUser user, long timestamp)
     {
-        var eventType = timestamp == 0 ? DataSyncEventTypes.Full : DataSyncEventTypes.Patch;
-        var flagsBytes = await _store.GetFlagsAsync(envId, timestamp);
-
-        var clientSdkFlags = new List<ClientSdkFlag>();
-        foreach (var flagBytes in flagsBytes)
-        {
-            using var document = JsonDocument.Parse(flagBytes);
-            var flag = document.RootElement;
-
-            clientSdkFlags.Add(await GetClientSdkFlagAsync(flag, user));
-        }
+        var eventType = timestamp == FullSyncTimestamp ? DataSyncEventTypes.Full : DataSyncEventTypes.Patch;
+        var flags = await store.GetFlagsAsync(envId, timestamp);
+        var clientSdkFlags = await EvaluateFlagsAsync(flags, user, envId);
 
         return new ClientSdkPayload(eventType, user.KeyId, clientSdkFlags);
     }
 
     public async Task<ServerSdkPayload> GetServerSdkPayloadAsync(Guid envId, long timestamp)
     {
-        var eventType = timestamp == 0 ? DataSyncEventTypes.Full : DataSyncEventTypes.Patch;
+        var eventType = timestamp == FullSyncTimestamp ? DataSyncEventTypes.Full : DataSyncEventTypes.Patch;
         var featureFlags = new List<JsonObject>();
         var segments = new List<JsonObject>();
 
-        var flagsBytes = await _store.GetFlagsAsync(envId, timestamp);
+        var flagsBytes = await store.GetFlagsAsync(envId, timestamp);
         foreach (var flag in flagsBytes)
         {
             var jsonObject = JsonNode.Parse(flag)!.AsObject();
             featureFlags.Add(jsonObject);
         }
 
-        var segmentsBytes = await _store.GetSegmentsAsync(envId, timestamp);
+        var segmentsBytes = await store.GetSegmentsAsync(envId, timestamp);
         foreach (var segment in segmentsBytes)
         {
             var jsonObject = JsonNode.Parse(segment)!.AsObject();
@@ -80,26 +77,77 @@ public class DataSyncService : IDataSyncService
         return new ServerSdkPayload(eventType, featureFlags, segments);
     }
 
-    public async Task<object> GetRelayProxyPayloadAsync(IEnumerable<Guid> envIds, long timestamp)
+    private async Task<RpPayload> GetRelayProxyPayloadAsync(
+        ConnectionContext connectionContext,
+        long timestamp,
+        JsonElement request)
     {
-        var eventType = timestamp == 0 ? DataSyncEventTypes.Full : DataSyncEventTypes.Patch;
+        var eventType = timestamp == FullSyncTimestamp ? DataSyncEventTypes.RpFull : DataSyncEventTypes.RpPatch;
 
-        List<object> payloads = [];
-        foreach (var envId in envIds)
+        var payloadItems = eventType == DataSyncEventTypes.RpFull
+            ? await GetFullAsync()
+            : await GetPatchAsync();
+
+        return new RpPayload(eventType, payloadItems);
+
+        async Task<List<RpPayloadItem>> GetFullAsync()
         {
-            var serverSdkPayload = await GetServerSdkPayloadAsync(envId, timestamp);
+            var items = new List<RpPayloadItem>();
+            var rpSecrets = await rpService.GetSecretsAsync(connectionContext.Token);
 
-            var payload = new
+            var groupedRpSecrets = rpSecrets.GroupBy(x => x.EnvId);
+            foreach (var group in groupedRpSecrets)
             {
-                envId = envId,
-                flags = serverSdkPayload.FeatureFlags,
-                segments = serverSdkPayload.Segments
-            };
+                var envId = group.Key;
+                var serverSdkPayload = await GetServerSdkPayloadAsync(envId, FullSyncTimestamp);
 
-            payloads.Add(payload);
+                var payload = new RpPayloadItem(
+                    envId,
+                    group.ToArray(),
+                    serverSdkPayload.FeatureFlags,
+                    serverSdkPayload.Segments
+                );
+
+                items.Add(payload);
+            }
+
+            return items;
         }
 
-        return new { eventType, payloads };
+        async Task<List<RpPayloadItem>> GetPatchAsync()
+        {
+            var timestampPerEnv = new Dictionary<Guid, long>();
+            if (request.TryGetProperty("envs", out var envs))
+            {
+                foreach (var env in envs.EnumerateArray())
+                {
+                    var envId = env.GetProperty("envId").GetGuid();
+                    var ts = env.GetProperty("timestamp").GetInt64();
+
+                    timestampPerEnv[envId] = ts;
+                }
+            }
+
+            var items = new List<RpPayloadItem>();
+            foreach (var rpConnection in connectionContext.MappedRpConnections)
+            {
+                var envId = rpConnection.EnvId;
+                var ts = timestampPerEnv.GetValueOrDefault(envId, FullSyncTimestamp);
+
+                var serverSdkPayload = await GetServerSdkPayloadAsync(envId, ts);
+
+                var payload = new RpPayloadItem(
+                    envId,
+                    [],
+                    serverSdkPayload.FeatureFlags,
+                    serverSdkPayload.Segments
+                );
+
+                items.Add(payload);
+            }
+
+            return items;
+        }
     }
 
     public async Task<object> GetFlagChangePayloadAsync(Connection connection, JsonElement flag)
@@ -111,7 +159,7 @@ public class DataSyncService : IDataSyncService
 
         object payload = connection.Type switch
         {
-            ConnectionType.Client => await GetClientSdkFlagChangePayloadAsync(flag, connection.User!),
+            ConnectionType.Client => await GetClientSdkFlagChangePayloadAsync(flag, connection.User!, connection.EnvId),
             ConnectionType.Server => GetServerSdkFlagChangePayload(flag),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(connection), $"unsupported sdk type {connection.Type}"
@@ -133,7 +181,11 @@ public class DataSyncService : IDataSyncService
 
         object payload = connection.Type switch
         {
-            ConnectionType.Client => await GetClientSegmentChangePayloadAsync(affectedFlagIds, connection.User!),
+            ConnectionType.Client => await GetClientSegmentChangePayloadAsync(
+                affectedFlagIds,
+                connection.User!,
+                connection.EnvId
+            ),
             ConnectionType.Server => GetServerSdkSegmentChangePayload(segment),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(connection), $"unsupported sdk type {connection.Type}"
@@ -145,59 +197,120 @@ public class DataSyncService : IDataSyncService
 
     #region get client sdk payload
 
-    private async Task<ClientSdkPayload> GetClientSdkFlagChangePayloadAsync(JsonElement flag, EndUser user)
+    private async Task<ClientSdkPayload> GetClientSdkFlagChangePayloadAsync(JsonElement flag, EndUser user, Guid envId)
     {
+        var clientSdkFlag = await TryEvaluateFlagAsync(flag, user, envId);
+
         return new ClientSdkPayload(
             DataSyncEventTypes.Patch,
             user.KeyId,
-            new[] { await GetClientSdkFlagAsync(flag, user) }
+            clientSdkFlag == null ? [] : [clientSdkFlag]
         );
     }
 
-    private async Task<ClientSdkPayload> GetClientSegmentChangePayloadAsync(string[] affectedFlagIds, EndUser user)
+    private async Task<ClientSdkPayload> GetClientSegmentChangePayloadAsync(
+        string[] affectedFlagIds,
+        EndUser user,
+        Guid envId)
     {
-        var clientSdkFlags = new List<ClientSdkFlag>();
-
-        var flags = await _store.GetFlagsAsync(affectedFlagIds);
-        foreach (var flag in flags)
-        {
-            using var document = JsonDocument.Parse(flag);
-            clientSdkFlags.Add(await GetClientSdkFlagAsync(document.RootElement, user));
-        }
+        var flags = await store.GetFlagsAsync(affectedFlagIds);
+        var clientSdkFlags = await EvaluateFlagsAsync(flags, user, envId);
 
         return new ClientSdkPayload(DataSyncEventTypes.Patch, user.KeyId, clientSdkFlags);
     }
 
-    private async Task<ClientSdkFlag> GetClientSdkFlagAsync(JsonElement flag, EndUser user)
+    private async Task<List<ClientSdkFlag>> EvaluateFlagsAsync(IEnumerable<byte[]> flags, EndUser user, Guid envId)
     {
-        var variations =
-            flag.GetProperty("variations").Deserialize<Variation[]>(ReusableJsonSerializerOptions.Web)!;
+        var result = new List<ClientSdkFlag>();
 
-        var scope = new EvaluationScope(flag, user, variations);
-        var userVariation = await _evaluator.EvaluateAsync(scope);
+        foreach (var flagBytes in flags)
+        {
+            try
+            {
+                using var json = EntityJsonReader.FeatureFlag.Parse(flagBytes);
 
-        return new ClientSdkFlag(flag, userVariation, variations);
+                var flag = await TryEvaluateFlagAsync(json.RootElement, user, envId);
+                if (flag != null)
+                {
+                    result.Add(flag);
+                }
+            }
+            catch (MalformedDataException ex)
+            {
+                LogEvaluationFailure(ex, envId, flagId: null, flagKey: null);
+            }
+        }
+
+        return result;
+    }
+
+    private async Task<ClientSdkFlag?> TryEvaluateFlagAsync(JsonElement flag, EndUser user, Guid envId)
+    {
+        try
+        {
+            var variations =
+                EntityJsonReader.FeatureFlag.DeserializeRequiredArray<Variation>(flag, "variations");
+
+            var scope = new EvaluationScope(flag, user, variations);
+            var userVariation = await evaluator.EvaluateAsync(scope);
+
+            return new ClientSdkFlag(flag, userVariation, variations);
+        }
+        catch (MalformedDataException ex)
+        {
+            LogEvaluationFailure(
+                ex,
+                envId,
+                EntityJsonReader.TryGetString(flag, "id"),
+                EntityJsonReader.TryGetString(flag, "key")
+            );
+
+            return null;
+        }
+    }
+
+    private void LogEvaluationFailure(MalformedDataException exception, Guid envId, string? flagId, string? flagKey)
+    {
+        var entityType = exception.EntityType switch
+        {
+            EvaluationEntityType.FeatureFlag => "feature-flag",
+            EvaluationEntityType.Segment => "segment",
+            _ => "unknown"
+        };
+
+        logger.LogError(
+            exception,
+            "Failed to evaluate feature flag {FlagKey} ({FlagId}) in environment {EnvId}. " +
+            "Malformed entity: {EntityType} ({EntityId}), property: {PropertyPath}. " +
+            "The malformed entity was skipped without failing the client data-sync.",
+            flagKey,
+            flagId,
+            envId,
+            entityType,
+            exception.EntityId ?? flagId,
+            exception.PropertyPath
+        );
     }
 
     #endregion
 
     #region get server sdk payload
 
-    private ServerSdkPayload GetServerSdkFlagChangePayload(JsonElement flag)
+    private static ServerSdkPayload GetServerSdkFlagChangePayload(JsonElement flag)
     {
         return new ServerSdkPayload(
             DataSyncEventTypes.Patch,
-            new[] { JsonObject.Create(flag)! },
-            Array.Empty<JsonObject>()
+            [JsonObject.Create(flag)!],
+            []
         );
     }
 
-    private ServerSdkPayload GetServerSdkSegmentChangePayload(JsonElement segment)
+    private static ServerSdkPayload GetServerSdkSegmentChangePayload(JsonElement segment)
     {
         return new ServerSdkPayload(
             DataSyncEventTypes.Patch,
-            Array.Empty<JsonObject>(),
-            new[] { JsonObject.Create(segment)! }
+            [],
+            [JsonObject.Create(segment)!]
         );
     }
 

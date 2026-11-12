@@ -1,4 +1,4 @@
-﻿namespace Application.FeatureFlags;
+namespace Application.FeatureFlags;
 
 public class InsightsVm
 {

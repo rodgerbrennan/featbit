@@ -1,23 +1,72 @@
 using Application.Bases.Models;
-using Application.ExperimentMetrics;
 using Application.Experiments;
+using Application.Experiments.ExperimentMetrics;
 using Domain.Experiments;
 
 namespace Application.Services;
 
-public interface IExperimentService : IService<Experiment>
+public interface IExperimentService
 {
-    Task ArchiveExperiment(Guid envId, Guid experimentId);
-    
-    Task StopAsync(Guid envId, Guid experimentId);
-    
-    Task ArchiveIterations(Guid envId, Guid experimentId);
-    
-    Task<ExperimentIteration> StartAsync(Guid envId, Guid experimentId);
-    
-    Task<IEnumerable<ExperimentStatusCountVm>> GetStatusCountAsync(Guid envId);
-    
-    Task<PagedResult<ExperimentVm>> GetListAsync(Guid envId, ExperimentFilter filter);
+    Task<ExperimentVm> CreateAsync(Experiment experiment);
 
-    Task<IEnumerable<ExperimentIterationResultsVm>> GetIterationResults(Guid envId, IEnumerable<ExperimentIterationParam> experimentIterationTuples);
+    Task<ExperimentDetailVm> GetAsync(Guid envId, Guid id);
+
+    Task<Guid> GetEnvIdAsync(Guid id);
+
+    Task DeleteAsync(Guid envId, Guid id);
+
+    Task<ExperimentDetailVm> UpdateAsync(
+        Guid envId,
+        Guid id,
+        ExperimentUpdate update);
+
+    Task<ExperimentDetailVm> UpdateStageAsync(
+        Guid envId,
+        Guid id,
+        string stage);
+
+    Task<ExperimentDetailVm> UpdateMetricsAsync(
+        Guid envId,
+        Guid id,
+        ExperimentMetricsUpdate update);
+
+    Task<ExperimentDetailVm> CreateRunAsync(Guid envId, Guid id, ExperimentRunCreate setup);
+
+    Task<ExperimentDetailVm> DeleteRunAsync(Guid envId, Guid id, Guid runId);
+
+    Task<ExperimentDetailVm> UpdateRunAsync(
+        Guid envId,
+        Guid id,
+        Guid runId,
+        ExperimentRunUpdate update);
+
+    Task<ExperimentDetailVm> UpdateRunAudienceAsync(
+        Guid envId,
+        Guid id,
+        Guid runId,
+        ExperimentRunAudienceUpdate update);
+
+    Task<ExperimentDetailVm> UpdateRunObservationWindowAsync(
+        Guid envId,
+        Guid id,
+        Guid runId,
+        ExperimentRunObservationWindowUpdate update);
+
+    Task<ExperimentDetailVm> AnalyzeRunAsync(
+        Guid envId,
+        Guid id,
+        Guid runId,
+        ExperimentRunAnalyzeRequest request);
+
+    Task<IReadOnlyCollection<ExperimentRunForLayer>> GetExperimentRunsByLayersAsync(
+        Guid envId,
+        IReadOnlyCollection<ExperimentLayer> layers);
+
+    Task<IReadOnlyCollection<ExperimentWithRuns>> GetExperimentsWithRunsAsync(
+        Guid envId,
+        string nameSearchText = null);
+
+    Task<PagedResult<ExperimentVm>> GetListAsync(
+        Guid envId,
+        ExperimentFilter filter);
 }

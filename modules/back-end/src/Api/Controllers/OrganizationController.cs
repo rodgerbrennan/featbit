@@ -1,4 +1,8 @@
+using Api.Authorization;
+using Application.Bases.Models;
+using Application.Members;
 using Application.Organizations;
+using Domain.Policies;
 using Domain.Workspaces;
 
 namespace Api.Controllers;
@@ -16,6 +20,7 @@ public class OrganizationController : ApiControllerBase
     }
 
     [HttpGet]
+    [TenantContext(TenantContextRequirement.Workspace)]
     public async Task<ApiResponse<IEnumerable<OrganizationVm>>> GetListAsync([FromQuery(Name = "isSsoFirstLogin")] bool isSsoFirstLogin = false)
     {
         var request = new GetOrganizationList
@@ -42,8 +47,21 @@ public class OrganizationController : ApiControllerBase
         return Ok(isUsed);
     }
 
+    [HttpGet("default-permissions")]
+    public async Task<ApiResponse<DefaultPermissionsVm>> GetDefaultPermissionAsync()
+    {
+        var request = new GetDefaultPermissions
+        {
+            OrganizationId = OrgId
+        };
+
+        var options = await Mediator.Send(request);
+        return Ok(options);
+    }
+
     [HttpPost]
     [Authorize(LicenseFeatures.MultiOrg)]
+    [Authorize(Permissions.CreateOrg)]
     public async Task<ApiResponse<OrganizationVm>> CreateAsync(CreateOrganization request)
     {
         request.WorkspaceId = WorkspaceId;
@@ -54,24 +72,17 @@ public class OrganizationController : ApiControllerBase
         return Ok(organization);
     }
 
-    [HttpPost("add-user")]
-    public async Task<ApiResponse<bool>> AddMemberByEmailAsync([FromBody] AddUser request)
+    [HttpGet("members")]
+    public async Task<ApiResponse<PagedResult<MemberVm>>> GetMembersAsync([FromQuery] MemberFilter filter)
     {
-        request.WorkspaceId = WorkspaceId;
-        request.OrganizationId = OrgId;
+        var request = new GetMemberList
+        {
+            OrganizationId = OrgId,
+            Filter = filter
+        };
 
-        var success = await Mediator.Send(request);
-
-        return Ok(success);
-    }
-
-    [HttpPut("remove-user")]
-    public async Task<ApiResponse<bool>> RemoveMemberAsync(RemoveUser request)
-    {
-        request.OrganizationId = OrgId;
-
-        var success = await Mediator.Send(request);
-        return Ok(success);
+        var members = await Mediator.Send(request);
+        return Ok(members);
     }
 
     [HttpPost("onboarding")]
@@ -88,20 +99,9 @@ public class OrganizationController : ApiControllerBase
     public async Task<ApiResponse<OrganizationVm>> UpdateAsync(UpdateOrganization request)
     {
         request.Id = OrgId;
+        request.CurrentUserPermissions = await GetRequestPermissionsAsync();
 
         var organization = await Mediator.Send(request);
         return Ok(organization);
-    }
-
-    [HttpDelete]
-    public async Task<ApiResponse<bool>> DeleteAsync()
-    {
-        var request = new DeleteOrganization
-        {
-            Id = OrgId
-        };
-
-        var success = await Mediator.Send(request);
-        return Ok(success);
     }
 }

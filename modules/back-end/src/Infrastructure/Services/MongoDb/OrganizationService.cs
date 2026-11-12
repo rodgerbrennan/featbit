@@ -1,7 +1,6 @@
 using Domain.Groups;
 using Domain.Members;
 using Domain.Organizations;
-using Domain.Policies;
 using Domain.Projects;
 using MongoDB.Driver;
 using MongoDB.Driver.Linq;
@@ -9,7 +8,7 @@ using Environment = Domain.Environments.Environment;
 
 namespace Infrastructure.Services.MongoDb;
 
-public class OrganizationService(MongoDbClient mongoDb, IProjectService projectService)
+public class OrganizationService(MongoDbClient mongoDb)
     : MongoDbService<Organization>(mongoDb), IOrganizationService
 {
     public async Task<string[]> GetScopesAsync(ScopeString[] scopeStrings)
@@ -31,7 +30,7 @@ public class OrganizationService(MongoDbClient mongoDb, IProjectService projectS
         return aggregation.ToArray();
     }
 
-    public async Task<ICollection<Organization>> GetListAsync(Guid userId)
+    public async Task<ICollection<Organization>> GetUserOrganizationsAsync(Guid workspaceId, Guid userId)
     {
         var organizations = MongoDb.QueryableOf<Organization>();
         var users = MongoDb.QueryableOf<OrganizationUser>();
@@ -40,7 +39,7 @@ public class OrganizationService(MongoDbClient mongoDb, IProjectService projectS
             from organization in organizations
             join user in users
                 on organization.Id equals user.OrganizationId
-            where user.UserId == userId
+            where user.UserId == userId && organization.WorkspaceId == workspaceId
             select organization;
 
         return await query.ToListAsync();
@@ -54,6 +53,15 @@ public class OrganizationService(MongoDbClient mongoDb, IProjectService projectS
         );
     }
 
+    public async Task<bool> ContainsUserAsync(Guid organizationId, Guid userId)
+    {
+        var exists = await MongoDb.QueryableOf<OrganizationUser>().AnyAsync(
+            x => x.OrganizationId == organizationId && x.UserId == userId
+        );
+
+        return exists;
+    }
+
     public async Task AddUserAsync(
         OrganizationUser organizationUser,
         ICollection<Guid>? policies,
@@ -62,11 +70,9 @@ public class OrganizationService(MongoDbClient mongoDb, IProjectService projectS
         var organizationId = organizationUser.OrganizationId;
         var userId = organizationUser.UserId;
 
-        // if organization user already exists
-        var existingUser = await MongoDb.QueryableOf<OrganizationUser>().FirstOrDefaultAsync(
-            x => x.OrganizationId == organizationId && x.UserId == userId
-        );
-        if (existingUser != null)
+        // if user is already in organization, do nothing
+        var exists = await ContainsUserAsync(organizationId, userId);
+        if (exists)
         {
             return;
         }
@@ -93,45 +99,5 @@ public class OrganizationService(MongoDbClient mongoDb, IProjectService projectS
 
             await MongoDb.CollectionOf<GroupMember>().InsertManyAsync(groupMembers);
         }
-    }
-
-    public async Task RemoveUserAsync(Guid organizationId, Guid userId)
-    {
-        // delete organization user
-        await MongoDb.CollectionOf<OrganizationUser>().DeleteManyAsync(
-            x => x.OrganizationId == organizationId && x.UserId == userId
-        );
-
-        // delete member policies
-        await MongoDb.CollectionOf<MemberPolicy>().DeleteManyAsync(
-            x => x.OrganizationId == organizationId && x.MemberId == userId
-        );
-
-        // delete member groups
-        await MongoDb.CollectionOf<GroupMember>().DeleteManyAsync(
-            x => x.OrganizationId == organizationId && x.MemberId == userId
-        );
-    }
-
-    public async Task DeleteAsync(Guid id)
-    {
-        // delete organization
-        await MongoDb.CollectionOf<Organization>().DeleteOneAsync(x => x.Id == id);
-
-        // delete organization user
-        await MongoDb.CollectionOf<OrganizationUser>().DeleteManyAsync(x => x.OrganizationId == id);
-
-        // delete organization policies & groups
-        await MongoDb.CollectionOf<Policy>().DeleteManyAsync(x => x.OrganizationId == id);
-        await MongoDb.CollectionOf<MemberPolicy>().DeleteManyAsync(x => x.OrganizationId == id);
-        await MongoDb.CollectionOf<Group>().DeleteManyAsync(x => x.OrganizationId == id);
-        await MongoDb.CollectionOf<GroupMember>().DeleteManyAsync(x => x.OrganizationId == id);
-
-        // delete projects
-        var projectIds = await MongoDb.QueryableOf<Project>()
-            .Where(x => x.OrganizationId == id)
-            .Select(x => x.Id)
-            .ToListAsync();
-        await projectService.DeleteManyAsync(projectIds);
     }
 }

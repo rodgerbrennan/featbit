@@ -2,14 +2,91 @@ using Domain.EndUsers;
 using Domain.Environments;
 using Domain.Organizations;
 using Domain.Projects;
+using Microsoft.Extensions.Logging;
 using MongoDB.Driver;
 using MongoDB.Driver.Linq;
 using Environment = Domain.Environments.Environment;
 
 namespace Infrastructure.Services.MongoDb;
 
-public class EnvironmentService(MongoDbClient mongoDb) : MongoDbService<Environment>(mongoDb), IEnvironmentService
+public class EnvironmentService(MongoDbClient mongoDb, ILogger<EnvironmentService> logger)
+    : MongoDbService<Environment>(mongoDb), IEnvironmentService
 {
+    public async Task<Organization> GetOrganizationAsync(Guid envId)
+    {
+        var query = from environment in MongoDb.QueryableOf<Environment>()
+            join project in MongoDb.QueryableOf<Project>() on environment.ProjectId equals project.Id
+            join organization in MongoDb.QueryableOf<Organization>() on project.OrganizationId equals organization.Id
+            where environment.Id == envId
+            select organization;
+        return await query.SingleAsync();
+    }
+
+    public async Task<string[]> GetServesAsync(string[] scopes)
+    {
+        if (scopes.Length == 0)
+        {
+            return [];
+        }
+
+        var projects = MongoDb.QueryableOf<Project>();
+        var environments = MongoDb.QueryableOf<Environment>();
+
+        var envIds = scopes.Select(Guid.Parse).ToArray();
+        var query =
+            from environment in environments
+            join project in projects on environment.ProjectId equals project.Id
+            where envIds.Contains(environment.Id)
+            select new
+            {
+                envId = environment.Id,
+                projectName = project.Name,
+                envName = environment.Name
+            };
+
+        var result = await query.ToListAsync();
+        return result
+            .Select(x => $"{x.envId},{x.projectName}/{x.envName}")
+            .ToArray();
+    }
+
+    public async Task<RpSecret[]> GetRpSecretsAsync(Guid[] envIds)
+    {
+        if (envIds.Length == 0)
+        {
+            return [];
+        }
+
+        var projects = MongoDb.QueryableOf<Project>();
+        var environments = MongoDb.QueryableOf<Environment>();
+
+        var query = from environment in environments
+            join project in projects on environment.ProjectId equals project.Id
+            where envIds.Contains(environment.Id)
+            select new
+            {
+                EnvId = environment.Id,
+                EnvKey = environment.Key,
+                ProjectKey = project.Key,
+                Secrets = environment.Secrets,
+            };
+
+        var result = await query.ToListAsync();
+
+        var rpSecrets = result.Select(x => x.Secrets.Select(secret => new RpSecret
+            {
+                EnvId = x.EnvId,
+                EnvKey = x.EnvKey,
+                ProjectKey = x.ProjectKey,
+                Type = secret.Type,
+                Value = secret.Value
+            }))
+            .SelectMany(x => x)
+            .ToArray();
+
+        return rpSecrets;
+    }
+
     public async Task<ResourceDescriptor?> GetResourceDescriptorAsync(Guid envId)
     {
         var organizations = MongoDb.QueryableOf<Organization>();
@@ -46,6 +123,62 @@ public class EnvironmentService(MongoDbClient mongoDb) : MongoDbService<Environm
         return descriptor;
     }
 
+    public async Task<ICollection<SecretCache>> GetSecretCachesAsync()
+    {
+        var organizations = MongoDb.QueryableOf<Organization>();
+        var projects = MongoDb.QueryableOf<Project>();
+        var environments = MongoDb.QueryableOf<Environment>();
+
+        var descriptors = from environment in environments
+            join project in projects on environment.ProjectId equals project.Id
+            join organization in organizations on project.OrganizationId equals organization.Id
+            select new ResourceDescriptor
+            {
+                Organization = new IdNameKeyProps
+                {
+                    Id = organization.Id,
+                    Name = organization.Name,
+                    Key = organization.Key
+                },
+                Project = new IdNameKeyProps
+                {
+                    Id = project.Id,
+                    Name = project.Name,
+                    Key = project.Key
+                },
+                Environment = new IdNameKeyProps
+                {
+                    Id = environment.Id,
+                    Name = environment.Name,
+                    Key = environment.Key
+                }
+            };
+
+        var rds = await descriptors.ToListAsync();
+        var envs = await environments.ToListAsync();
+
+        var caches = new List<SecretCache>();
+        var descriptorDictionary = rds.ToDictionary(x => x.Environment.Id, x => x);
+
+        foreach (var env in envs)
+        {
+            if (descriptorDictionary.TryGetValue(env.Id, out var descriptor))
+            {
+                var secretCaches = env.Secrets.Select(x => new SecretCache(descriptor, x));
+                caches.AddRange(secretCaches);
+            }
+            else
+            {
+                logger.LogWarning(
+                    "Data inconsistency detected: Resource descriptor not found for environment with ID {EnvId}. Please verify the integrity of the environment data in the database.",
+                    env.Id
+                );
+            }
+        }
+
+        return caches;
+    }
+
     public async Task AddWithBuiltInPropsAsync(Environment env)
     {
         await Collection.InsertOneAsync(env);
@@ -73,9 +206,6 @@ public class EnvironmentService(MongoDbClient mongoDb) : MongoDbService<Environm
 
         // delete end user properties
         await MongoDb.CollectionOf<EndUserProperty>().DeleteManyAsync(x => x.EnvId == id);
-
-        // delete environment events
-        await MongoDb.CollectionOf("Events").DeleteManyAsync(x => x["env_id"].AsGuid == id);
     }
 
     public async Task DeleteManyAsync(ICollection<Guid> ids)
@@ -87,16 +217,6 @@ public class EnvironmentService(MongoDbClient mongoDb) : MongoDbService<Environm
 
         // delete end user properties
         await MongoDb.CollectionOf<EndUserProperty>().DeleteManyAsync(x => ids.Contains(x.EnvId));
-
-        // delete environment events
-        await MongoDb.CollectionOf("Events").DeleteManyAsync(x => ids.Contains(x["env_id"].AsGuid));
-    }
-
-    public async Task<IEnumerable<Setting>> GetSettingsAsync(Guid envId, string type)
-    {
-        var environment = await GetAsync(envId);
-
-        return environment.Settings.Where(x => x.Type == type);
     }
 
     public async Task<bool> HasKeyBeenUsedAsync(Guid projectId, string key)
@@ -105,5 +225,23 @@ public class EnvironmentService(MongoDbClient mongoDb) : MongoDbService<Environm
             environment.ProjectId == projectId &&
             string.Equals(environment.Key, key, StringComparison.OrdinalIgnoreCase)
         );
+    }
+
+    public async Task<string?> GetProjectEnvAsync(Guid envId)
+    {
+        var query =
+            from project in MongoDb.QueryableOf<Project>()
+            join environment in MongoDb.QueryableOf<Environment>() on project.Id equals environment.ProjectId
+            where environment.Id == envId
+            select new
+            {
+                project = project.Key,
+                env = environment.Key
+            };
+
+        var result = await query.FirstOrDefaultAsync();
+        return result == null
+            ? string.Empty
+            : $"{result.project}/{result.env}";
     }
 }

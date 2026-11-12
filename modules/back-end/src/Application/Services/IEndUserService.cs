@@ -6,11 +6,15 @@ namespace Application.Services;
 
 public interface IEndUserService : IService<EndUser>
 {
-    Task<PagedResult<EndUser>> GetListAsync(Guid workspaceId, Guid envId, EndUserFilter filter);
+    Task<CursorPagedResult<EndUser>> GetListAsync(Guid envId, EndUserFilter filter);
+
+    Task<ICollection<EndUser>> SearchAsync(Guid workspaceId, Guid envId, EndUserSearchFilter filter);
+
+    Task<ICollection<EndUser>> LoadEndUsersAsync(Guid envId, EndUserFilter filter);
 
     Task<EndUser> UpsertAsync(EndUser user);
 
-    Task<ImportUserResult> UpsertAsync(Guid? workspaceId, Guid? envId, IEnumerable<EndUser> endUsers);
+    Task<ImportUserResult> UpsertAsync(Guid? workspaceId, Guid? envId, EndUser[] endUsers);
 
     Task<EndUserProperty[]> AddNewPropertiesAsync(EndUser user);
 

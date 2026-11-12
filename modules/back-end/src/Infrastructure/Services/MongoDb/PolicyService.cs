@@ -1,3 +1,5 @@
+using Domain.AuditLogs;
+using Application.Bases.Exceptions;
 using Application.Bases.Models;
 using Application.Policies;
 using Domain.Groups;
@@ -12,6 +14,25 @@ namespace Infrastructure.Services.MongoDb;
 
 public class PolicyService(MongoDbClient mongoDb) : MongoDbService<Policy>(mongoDb), IPolicyService
 {
+    public async Task<PolicyAuditSnapshot?> GetAuditSnapshotAsync(Guid id)
+    {
+        var policy = await MongoDb.QueryableOf<Policy>().FirstOrDefaultAsync(x => x.Id == id);
+        if (policy == null) return null;
+        var memberIds = await MongoDb.QueryableOf<MemberPolicy>().Where(x => x.PolicyId == id).Select(x => x.MemberId).ToListAsync();
+        var groupIds = await MongoDb.QueryableOf<GroupPolicy>().Where(x => x.PolicyId == id).Select(x => x.GroupId).ToListAsync();
+        var members = await MongoDb.QueryableOf<User>().Where(x => memberIds.Contains(x.Id))
+            .Select(x => new IamAuditReference(x.Id, x.Name, "member/" + x.Email)).ToListAsync();
+        var groups = await MongoDb.QueryableOf<Group>().Where(x => groupIds.Contains(x.Id))
+            .Select(x => new IamAuditReference(x.Id, x.Name, "group/" + x.Name)).ToListAsync();
+        var statements = policy.Statements.OrderBy(x => x.Id).Select(x => new PolicyStatement
+        {
+            Id = x.Id, ResourceType = x.ResourceType, Effect = x.Effect,
+            Actions = x.Actions.Distinct().Order().ToArray(), Resources = x.Resources.Distinct().Order().ToArray()
+        }).ToArray();
+        return new PolicyAuditSnapshot(policy.Id, policy.Name, $"policy/{policy.Key}", policy.Description,
+            statements, members.OrderBy(x => x.Id).ToArray(), groups.OrderBy(x => x.Id).ToArray());
+    }
+
     public async Task DeleteAsync(Guid id)
     {
         // delete policy 
@@ -24,6 +45,17 @@ public class PolicyService(MongoDbClient mongoDb) : MongoDbService<Policy>(mongo
         // delete policy members
         await MongoDb.CollectionOf<MemberPolicy>()
             .DeleteManyAsync(x => x.PolicyId == id);
+    }
+
+    public async Task<Policy> GetAsync(Guid organizationId, string key)
+    {
+        var policy = await FindOneAsync(x => x.OrganizationId == organizationId && x.Key == key);
+        if (policy == null)
+        {
+            throw new EntityNotFoundException(nameof(Policy), $"{organizationId}-{key}");
+        }
+
+        return policy;
     }
 
     public async Task<PagedResult<Policy>> GetListAsync(Guid organizationId, PolicyFilter filter)
@@ -66,6 +98,7 @@ public class PolicyService(MongoDbClient mongoDb) : MongoDbService<Policy>(mongo
                 theGroup.Id,
                 theGroup.Name,
                 theGroup.Description,
+                theGroup.CreatedAt,
                 AllGroupPolicies = allGroupPolicies
             };
 
@@ -83,6 +116,7 @@ public class PolicyService(MongoDbClient mongoDb) : MongoDbService<Policy>(mongo
 
         var totalCount = await query.CountAsync();
         var items = await query
+            .OrderByDescending(x => x.CreatedAt)
             .Skip(filter.PageIndex * filter.PageSize)
             .Take(filter.PageSize)
             .ToListAsync();
@@ -120,6 +154,7 @@ public class PolicyService(MongoDbClient mongoDb) : MongoDbService<Policy>(mongo
                 user.Id,
                 user.Name,
                 user.Email,
+                user.CreatedAt,
                 AllMemberPolicies = allMemberPolicies,
             };
 
@@ -141,6 +176,7 @@ public class PolicyService(MongoDbClient mongoDb) : MongoDbService<Policy>(mongo
 
         var totalCount = await query.CountAsync();
         var items = await query
+            .OrderByDescending(x => x.CreatedAt)
             .Skip(filter.PageIndex * filter.PageSize)
             .Take(filter.PageSize)
             .ToListAsync();
@@ -157,11 +193,11 @@ public class PolicyService(MongoDbClient mongoDb) : MongoDbService<Policy>(mongo
         return new PagedResult<PolicyMember>(totalCount, vms);
     }
 
-    public async Task<bool> IsNameUsedAsync(Guid organizationId, string name)
+    public async Task<bool> IsKeyUsedAsync(Guid organizationId, string key)
     {
         return await AnyAsync(x =>
             x.OrganizationId == organizationId &&
-            string.Equals(x.Name, name, StringComparison.CurrentCultureIgnoreCase)
+            string.Equals(x.Key, key, StringComparison.CurrentCultureIgnoreCase)
         );
     }
 }

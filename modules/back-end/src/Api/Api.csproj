@@ -1,32 +1,45 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
     <PropertyGroup>
-        <TargetFramework>net8.0</TargetFramework>
+        <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <GenerateDocumentationFile>true</GenerateDocumentationFile>
         <NoWarn>$(NoWarn);1591</NoWarn>
     </PropertyGroup>
 
+    <PropertyGroup>
+        <!--
+          Referencing Microsoft.Extensions.ApiDescription.Server defaults this to true, which would
+          make every build boot the full app (including its hosted services) just to export docs.
+          Keep it off by default; the release documentation workflow
+          (.github/workflows/update-api-reference.yml) opts back in with
+          -p:OpenApiGenerateDocumentsOnBuild=true for its dedicated export step.
+        -->
+        <OpenApiGenerateDocumentsOnBuild>false</OpenApiGenerateDocumentsOnBuild>
+    </PropertyGroup>
+
     <ItemGroup>
         <!-- Api Versioning -->
-        <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" Version="8.1.0" />
+        <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" Version="10.0.0" />
 
-        <!-- Swagger -->
-        <PackageReference Include="Swashbuckle.AspNetCore" Version="6.7.3" />
-        <PackageReference Include="Swashbuckle.AspNetCore.Annotations" Version="6.7.3" />
-        <PackageReference Include="Swashbuckle.AspNetCore.Filters" Version="8.0.2" />
-        <PackageReference Include="Swashbuckle.AspNetCore.ReDoc" Version="6.7.3" />
+        <!-- OpenApi -->
+        <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.13" />
+        <PackageReference Include="Scalar.AspNetCore" Version="2.18.0" />
+        <PackageReference Include="Microsoft.Extensions.ApiDescription.Server" Version="10.0.13">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
 
         <!-- Serilog -->
-        <PackageReference Include="Serilog.AspNetCore" Version="8.0.2" />
-        <PackageReference Include="Serilog.Enrichers.ClientInfo" Version="2.1.1" />
-        <PackageReference Include="Serilog.Sinks.OpenTelemetry" Version="4.1.0" />
+        <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
+        <PackageReference Include="Serilog.Enrichers.ClientInfo" Version="2.9.0" />
+        <PackageReference Include="Serilog.Sinks.OpenTelemetry" Version="4.2.0" />
 
-        <PackageReference Include="Grpc.Net.Client" Version="2.65.0" />
-        <PackageReference Include="System.Text.Encodings.Web" Version="8.0.0" />
+        <PackageReference Include="Grpc.Net.Client" Version="2.80.0" />
+        <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
 
-        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.12">
+        <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.8">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
@@ -35,6 +48,10 @@
     <ItemGroup>
         <ProjectReference Include="..\Application\Application.csproj" />
         <ProjectReference Include="..\Infrastructure\Infrastructure.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="Api.UnitTests" />
     </ItemGroup>
 
 </Project>

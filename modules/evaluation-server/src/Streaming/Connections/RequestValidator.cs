@@ -1,57 +1,52 @@
-using System.Net.WebSockets;
+using Domain.Secrets;
 using Domain.Shared;
-using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Internal;
-using Microsoft.Extensions.Logging;
 using Streaming.Services;
 
 namespace Streaming.Connections;
 
 public sealed class RequestValidator(
     ISystemClock systemClock,
-    IStore store,
     StreamingOptions options,
-    IServiceProvider serviceProvider,
-    ILogger<RequestValidator> logger)
+    IRelayProxyService rpService,
+    SecretCache secretCache)
     : IRequestValidator
 {
-    private const long TokenTimeoutMs = 30 * 1000;
-
-    public async Task<ValidationResult> ValidateAsync(ConnectionContext context)
+    public async Task<ValidationResult> ValidateAsync(HttpContext httpContext)
     {
         try
         {
-            return await ValidateCoreAsync(context);
+            return await ValidateCoreAsync(httpContext);
         }
         catch (Exception ex)
         {
-            logger.ErrorValidateRequest(context.RawQuery, ex);
-
-            // throw original exception
-            throw;
+            return ValidationResult.Unavailable("Request validation unavailable.", ex);
         }
     }
 
-    private async Task<ValidationResult> ValidateCoreAsync(ConnectionContext context)
+    private async Task<ValidationResult> ValidateCoreAsync(HttpContext httpContext)
     {
-        var (ws, type, version, tokenString) = context;
+        var query = httpContext.Request.Query;
+        var type = query["type"].ToString();
+        var version = query["version"].ToString();
+        var tokenString = query["token"].ToString();
 
         // connection type
         if (!options.SupportedTypes.Contains(type))
         {
-            return ValidationResult.Failed($"Invalid type: {type}");
+            return ValidationResult.Invalid($"Invalid connection type. ct={type}");
         }
 
         // connection version
         if (!options.SupportedVersions.Contains(version))
         {
-            return ValidationResult.Failed($"Invalid version: {version}");
+            return ValidationResult.Invalid($"Invalid protocol version. ct={type}; v={version}");
         }
 
-        // websocket state
-        if (ws is not { State: WebSocketState.Open })
+        if (string.IsNullOrWhiteSpace(tokenString))
         {
-            return ValidationResult.Failed($"Invalid websocket state: {ws?.State}");
+            return ValidationResult.Invalid($"Missing token. ct={type}; v={version}");
         }
 
         return type == ConnectionType.RelayProxy
@@ -60,40 +55,73 @@ public sealed class RequestValidator(
 
         async Task<ValidationResult> ValidateRelayProxyAsync()
         {
-            var rpService = serviceProvider.GetRequiredService<IRelayProxyService>();
-
-            var serverSecrets = await rpService.GetServerSecretsAsync(tokenString);
-            return serverSecrets.Length == 0
-                ? ValidationResult.Failed($"Invalid relay proxy token: {tokenString}")
-                : ValidationResult.Ok(serverSecrets);
+            try
+            {
+                var serverSecrets = await rpService.GetServerSecretsAsync(tokenString);
+                return serverSecrets.Length == 0
+                    ? ValidationResult.Invalid("Relay proxy lookup found no server secrets")
+                    : ValidationResult.Valid(serverSecrets);
+            }
+            catch (Exception ex)
+            {
+                // Store unavailable → return Unavailable for transient retry
+                return ValidationResult.Unavailable("Relay proxy lookup unavailable.", ex);
+            }
         }
 
         async Task<ValidationResult> ValidateSecretTokenAsync()
         {
+            // check token format
             var token = new Token(tokenString.AsSpan());
-            var current = systemClock.UtcNow.ToUnixTimeMilliseconds();
             if (!token.IsValid)
             {
-                return ValidationResult.Failed($"Invalid token: {tokenString}");
+                return ValidationResult.Invalid("Invalid token format");
             }
 
-            if (Math.Abs(current - token.Timestamp) > TokenTimeoutMs)
+            // check secret format
+            if (!Secret.TryParse(token.SecretString, out var envId))
             {
-                return ValidationResult.Failed($"Token is expired: {tokenString}");
+                return ValidationResult.Invalid("Invalid secret format");
             }
 
-            var secret = await store.GetSecretAsync(token.SecretString);
-            if (secret is null)
+            // check token clock skew (server time vs token timestamp)
+            var currentTime = systemClock.UtcNow;
+            var currentTimestamp = currentTime.ToUnixTimeMilliseconds();
+            var serverMinusTokenMs = currentTimestamp - token.Timestamp;
+            if (Math.Abs(serverMinusTokenMs) > options.TokenExpirySeconds * 1000)
             {
-                return ValidationResult.Failed($"Secret is not found: {token.SecretString}");
+                var tokenTime = DateTimeOffset.FromUnixTimeMilliseconds(token.Timestamp).ToString("O");
+                return ValidationResult.Invalid(
+                    $"Token timestamp out of range. TokenTime={tokenTime}({token.Timestamp}); ServerTime={currentTime:O}({currentTimestamp}); ServerMinusTokenMs={serverMinusTokenMs}; Configured Streaming:TokenExpirySeconds={options.TokenExpirySeconds}s; env={envId}; ct={type}; v={version}"
+                );
+            }
+
+            // check secret
+            Secret? secret;
+            try
+            {
+                secret = await secretCache.GetAsync(token.SecretString);
+            }
+            catch (Exception ex)
+            {
+                return ValidationResult.Unavailable(
+                    $"Secret lookup unavailable. env={envId}; ct={type}; v={version}", ex
+                );
+            }
+
+            if (secret is null || secret.EnvId != envId)
+            {
+                return ValidationResult.Invalid("Invalid environment secret");
             }
 
             if (secret.Type != type)
             {
-                return ValidationResult.Failed($"Inconsistent secret used: {secret.Type}. Request type: {type}");
+                return ValidationResult.Invalid(
+                    $"Secret type mismatch. st={secret.Type}; ct={type}; v={version}; env={secret.EnvId}"
+                );
             }
 
-            return ValidationResult.Ok([secret]);
+            return ValidationResult.Valid([secret]);
         }
     }
 }

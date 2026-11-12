@@ -1,0 +1,45 @@
+using Api.Authorization;
+using Microsoft.AspNetCore.Authorization;
+using System.Text.Json;
+using Api.Contracts;
+using Api.RateLimiting;
+using Api.Services;
+using Domain.Evaluation;
+using Domain.Shared;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+
+namespace Api.Public;
+
+[Route("api/public/featureflag")]
+[EnableRateLimiting(RateLimitingPolicies.FeatureFlag)]
+public class FeatureFlagController(IFeatureFlagService flagService, IEvaluator evaluator) : ApiControllerBase
+{
+    [HttpPost("evaluate")]
+    [Authorize(SecretPolicies.ServerOrClient)]
+    public async Task<IActionResult> EvaluateAsync(EvaluateFlagRequest request)
+    {
+        if (!request.TryValidate(out var validationError))
+        {
+            return BadRequest(validationError);
+        }
+
+        var filter = request.Filter ?? new FeatureFlagFilter();
+        var flags = await flagService.GetListAsync(EnvId, filter);
+
+        var evalResults = new List<EvalResult>();
+        foreach (var flag in flags)
+        {
+            var variations =
+                flag.GetProperty("variations").Deserialize<Variation[]>(ReusableJsonSerializerOptions.Web)!;
+
+            var scope = new EvaluationScope(flag, request.User!, variations);
+            var userVariation = await evaluator.EvaluateAsync(scope);
+            var evalResult = new EvalResult(flag, userVariation);
+
+            evalResults.Add(evalResult);
+        }
+
+        return Ok(evalResults);
+    }
+}

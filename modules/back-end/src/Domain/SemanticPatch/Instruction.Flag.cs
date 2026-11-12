@@ -1,4 +1,6 @@
+using System.Text.Json.Serialization;
 using Domain.FeatureFlags;
+using Domain.Policies;
 
 namespace Domain.SemanticPatch;
 
@@ -8,7 +10,41 @@ public abstract class FlagInstruction : Instruction
     {
     }
 
+    /// <summary>
+    /// Checks for conflicts without modifying the flag. The default implementation performs no checks.
+    /// </summary>
+    /// <remarks>Must support the flag state before any draft instructions have been applied.</remarks>
+    /// <exception cref="FlagInstructionConflictException">The instruction conflicts with the flag's current state.</exception>
+    public virtual void EnsureNoConflict(FeatureFlag flag)
+    {
+    }
+
     public abstract void Apply(FeatureFlag flag);
+
+    [JsonIgnore]
+    public string Permission
+    {
+        get
+        {
+            return Kind switch
+            {
+                FlagInstructionKind.TurnFlagOn or FlagInstructionKind.TurnFlagOff => Permissions.ToggleFlag,
+                FlagInstructionKind.UpdateName => Permissions.UpdateFlagName,
+                FlagInstructionKind.UpdateDescription => Permissions.UpdateFlagDescription,
+                FlagInstructionKind.AddTags or FlagInstructionKind.RemoveTags => Permissions.UpdateFlagTags,
+                FlagInstructionKind.ArchiveFlag => Permissions.ArchiveFlag,
+                FlagInstructionKind.RestoreFlag => Permissions.RestoreFlag,
+                FlagInstructionKind.UpdateDisabledVariation => Permissions.UpdateFlagOffVariation,
+
+                var kind when FlagInstructionKind.UpdateVariationKinds.Contains(kind) => Permissions.UpdateFlagVariations,
+                var kind when FlagInstructionKind.UpdateDefaultRuleKinds.Contains(kind) => Permissions.UpdateFlagDefaultRule,
+                var kind when FlagInstructionKind.UpdateTargetUsersKinds.Contains(kind) => Permissions.UpdateFlagIndividualTargeting,
+                var kind when FlagInstructionKind.UpdateRuleKinds.Contains(kind) => Permissions.UpdateFlagTargetingRules,
+
+                _ => string.Empty
+            };
+        }
+    }
 }
 
 public class NoopFlagInstruction : FlagInstruction

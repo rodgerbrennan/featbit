@@ -3,6 +3,7 @@ using Application.Bases;
 using Application.Bases.Exceptions;
 using Application.Bases.Models;
 using Application.EndUsers;
+using Application.FeatureFlags;
 using Domain.EndUsers;
 using Domain.Utils;
 
@@ -23,14 +24,25 @@ public class EndUserController : ApiControllerBase
         return Ok(user);
     }
 
-    [HttpPost]
-    public async Task<ApiResponse<PagedResult<EndUser>>> GetListAsync(Guid envId, SearchEndUser query)
+    [HttpPost("search")]
+    public async Task<ApiResponse<ICollection<EndUser>>> SearchAsync(Guid envId, EndUserSearchFilter filter)
     {
-        var filter = new EndUserFilter(query);
-
-        var request = new GetEndUserList
+        var request = new SearchEndUser
         {
             WorkspaceId = WorkspaceId,
+            EnvId = envId,
+            Filter = filter
+        };
+
+        var users = await Mediator.Send(request);
+        return Ok(users);
+    }
+
+    [HttpPost("list")]
+    public async Task<ApiResponse<CursorPagedResult<EndUser>>> GetListAsync(Guid envId, EndUserFilter filter)
+    {
+        var request = new GetEndUserList
+        {
             EnvId = envId,
             Filter = filter
         };
@@ -53,6 +65,7 @@ public class EndUserController : ApiControllerBase
     {
         var request = new GetEndUserByKeyIds
         {
+            WorkspaceId = WorkspaceId,
             EnvId = envId,
             KeyIds = keyIds
         };
@@ -62,13 +75,16 @@ public class EndUserController : ApiControllerBase
     }
 
     [HttpGet("{id:guid}/flags")]
-    public async Task<ApiResponse<PagedResult<EndUserFlagVm>>> GetFlagsAsync(Guid envId, Guid id, string? searchText)
+    public async Task<ApiResponse<PagedResult<EndUserFlagVm>>> GetFlagsAsync(
+        Guid envId,
+        Guid id,
+        [FromQuery] FeatureFlagFilter filter)
     {
         var request = new GetEndUserFlags
         {
             EnvId = envId,
             Id = id,
-            SearchText = searchText
+            Filter = filter
         };
 
         var flags = await Mediator.Send(request);
@@ -89,10 +105,10 @@ public class EndUserController : ApiControllerBase
         return Ok(segments);
     }
 
-    [HttpGet("get-by-featureflag")]
-    public async Task<ApiResponse<PagedResult<FeatureFlagEndUserStatsVm>>> GetListByFeatureFlagAsync(Guid envId, [FromQuery] FeatureFlagEndUserFilter filter)
+    [HttpGet("stats")]
+    public async Task<ApiResponse<PagedResult<EndUserStatsVm>>> GetStatsAsync(Guid envId, [FromQuery] EndUserStatsFilter filter)
     {
-        var request = new GetFeatureFlagEndUserList
+        var request = new GetEndUserStats
         {
             EnvId = envId,
             Filter = filter
@@ -123,10 +139,23 @@ public class EndUserController : ApiControllerBase
         }
         catch (JsonException)
         {
-            throw new BusinessException(ErrorCodes.InvalidJson);
+            throw new BusinessException(ErrorCodes.Invalid("file"));
         }
 
         var success = await Mediator.Send(request);
         return Ok(success);
+    }
+
+    [HttpPost("download")]
+    public async Task<ApiResponse<ImportUserData>> DownloadAsync(Guid envId, EndUserFilter filter)
+    {
+        var request = new DownloadEndUsers
+        {
+            EnvId = envId,
+            Filter = filter
+        };
+
+        var data = await Mediator.Send(request);
+        return Ok(data);
     }
 }

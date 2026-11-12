@@ -1,9 +1,11 @@
+using System.Text.Json;
 using Application.Bases;
 using Application.Bases.Exceptions;
 using Application.Bases.Models;
 using Application.EndUsers;
 using Dapper;
 using Domain.EndUsers;
+using Domain.Utils;
 using Microsoft.EntityFrameworkCore;
 using SqlKata;
 using SqlKata.Compilers;
@@ -13,105 +15,200 @@ namespace Infrastructure.Services.EntityFrameworkCore;
 public class EndUserService(AppDbContext dbContext)
     : EntityFrameworkCoreService<EndUser>(dbContext), IEndUserService
 {
-    public async Task<PagedResult<EndUser>> GetListAsync(Guid workspaceId, Guid envId, EndUserFilter userFilter)
+    public async Task<CursorPagedResult<EndUser>> GetListAsync(Guid envId, EndUserFilter userFilter)
     {
-        var table = new Query("end_users");
+        var filterQuery = TranslateFilter(envId, userFilter);
 
-        var baseQuery = userFilter.GlobalUserOnly
-            ? table.Where("workspace_id", workspaceId)
-            : userFilter.IncludeGlobalUser
-                ? table.Where(
-                    x => x.Where("workspace_id", workspaceId).OrWhere("env_id", envId)
-                )
-                : table.Where("env_id", envId);
+        var cursor = userFilter.Cursor;
+        var isBackward = cursor?.Direction == PageCursorDirection.Backward;
+        var pageSize = userFilter.PageSize;
+        var takeCount = pageSize + 1;
 
-        var pgCompiler = new PostgresCompiler();
+        var usersQuery = filterQuery.Clone();
 
-        // excluded keyIds
-        var excludedKeyIds = userFilter.ExcludedKeyIds ?? [];
-        if (excludedKeyIds.Length != 0)
+        if (cursor != null)
         {
-            baseQuery.WhereNotIn("key_id", excludedKeyIds);
+            usersQuery = cursor.Direction == PageCursorDirection.Forward
+                ? usersQuery.WhereRaw("(updated_at, id) < (?, ?)", cursor.UpdatedAt, cursor.Id)
+                : usersQuery.WhereRaw("(updated_at, id) > (?, ?)", cursor.UpdatedAt, cursor.Id);
         }
 
-        var name = userFilter.Name;
-        var keyId = userFilter.KeyId;
-        var customizedProperties = userFilter.CustomizedProperties ?? [];
+        usersQuery = isBackward
+            ? usersQuery
+                .OrderBy("updated_at")
+                .OrderBy("id")
+                .Take(takeCount)
+            : usersQuery
+                .OrderByDesc("updated_at")
+                .OrderByDesc("id")
+                .Take(takeCount);
 
-        baseQuery.Where(
-            group => group
-                .When(!string.IsNullOrWhiteSpace(keyId), q => q.OrWhereContains("key_id", keyId))
-                .When(!string.IsNullOrWhiteSpace(name), q => q.OrWhereContains("name", name))
-                .When(customizedProperties.Count > 0, q =>
-                {
-                    List<object> parameters = [];
+        var pgCompiler = new PostgresCompiler();
+        var usersSr = pgCompiler.Compile(usersQuery);
+        var users =
+            (await DbConnection.QueryAsync<EndUser>(usersSr.Sql, usersSr.NamedBindings)).AsList();
 
-                    var wheres = customizedProperties.Select(cp =>
-                    {
-                        parameters.Add(cp.Name);
-                        parameters.Add($"%{cp.Value}%");
+        var hasMoreInRequestedDirection = users.Count > pageSize;
+        if (hasMoreInRequestedDirection)
+        {
+            users = users.Take(pageSize).ToList();
+        }
 
-                        return "(cp->>'name'= ? and cp->>'value' ilike ?)";
-                    });
-                    var where = string.Join(" or ", wheres);
+        if (isBackward)
+        {
+            users.Reverse();
+        }
 
-                    return q.OrWhereRaw(
-                        $"exists(select 1 from jsonb_array_elements(customized_properties) as cp where {where})",
-                        parameters.ToArray()
-                    );
-                })
-        );
+        var hasPrevious = isBackward
+            ? hasMoreInRequestedDirection
+            : cursor != null;
 
+        var hasNext = isBackward
+            ? cursor != null
+            : hasMoreInRequestedDirection;
+
+        var previousCursor = hasPrevious && users.Count > 0
+            ? new PageCursor(users[0].Id, users[0].UpdatedAt, PageCursorDirection.Backward)
+            : null;
+
+        var nextCursor = hasNext && users.Count > 0
+            ? new PageCursor(users[^1].Id, users[^1].UpdatedAt, PageCursorDirection.Forward)
+            : null;
+
+        return new CursorPagedResult<EndUser>(users, previousCursor, nextCursor);
+    }
+
+    public async Task<ICollection<EndUser>> SearchAsync(Guid workspaceId, Guid envId, EndUserSearchFilter filter)
+    {
+        var limit = Math.Clamp(filter.Limit, 5, 50);
+
+        Query query;
+        if (filter.GlobalUserOnly)
+        {
+            query = ApplyFilters(new Query("end_users").Where("workspace_id", workspaceId));
+        }
+        else
+        {
+            // Do not use "where (workspace_id = ? OR env_id = ?)" here because it can't utilize the index efficiently
+            // when the table grows large.
+            // Use UNION ALL so each branch hits its own index (workspace_id or env_id),
+            // and then let PostgreSQL sort the combined result set in a single query.
+            var globalQuery = ApplyFilters(new Query("end_users").Where("workspace_id", workspaceId));
+            var envQuery = ApplyFilters(new Query("end_users").Where("env_id", envId));
+
+            query = new Query().From(globalQuery.UnionAll(envQuery).As("combined"));
+        }
+
+        query = query
+            .OrderByDesc("updated_at")
+            .OrderByDesc("id")
+            .Take(limit);
+
+        var pgCompiler = new PostgresCompiler();
+        var sqlResult = pgCompiler.Compile(query);
+
+        var users =
+            (await DbConnection.QueryAsync<EndUser>(sqlResult.Sql, sqlResult.NamedBindings)).AsList();
+        return users;
+
+        Query ApplyFilters(Query baseQuery)
+        {
+            var text = filter.SearchText;
+            if (!string.IsNullOrEmpty(text))
+            {
+                baseQuery = baseQuery.Where(
+                    x => x.OrWhereContains("key_id", text).OrWhereContains("name", text)
+                );
+            }
+
+            var excludedKeyIds = filter.ExcludedKeyIds ?? [];
+            if (excludedKeyIds.Length != 0)
+            {
+                baseQuery = baseQuery.WhereNotIn("key_id", excludedKeyIds);
+            }
+
+            return baseQuery;
+        }
+    }
+
+    public async Task<ICollection<EndUser>> LoadEndUsersAsync(Guid envId, EndUserFilter userFilter)
+    {
+        var baseQuery = TranslateFilter(envId, userFilter);
+
+        var pgCompiler = new PostgresCompiler();
         var countSr = pgCompiler.Compile(
             baseQuery.Clone().AsCount()
         );
-        var itemsSr = pgCompiler.Compile(
-            baseQuery
-                .Clone()
-                .OrderByDesc("updated_at")
-                .Skip(userFilter.PageIndex * userFilter.PageSize)
-                .Take(userFilter.PageSize)
-        );
 
-        var totalCount = await DbConnection.ExecuteScalarAsync<int>(countSr.Sql, countSr.NamedBindings);
-        var items = await DbConnection.QueryAsync<EndUser>(itemsSr.Sql, itemsSr.NamedBindings);
+        var total = await DbConnection.ExecuteScalarAsync<int>(countSr.Sql, countSr.NamedBindings);
+        if (total > EndUserConstants.EndUserLoadLimit)
+        {
+            throw new BusinessException(ErrorCodes.EndUserLimitExceeded);
+        }
 
-        return new PagedResult<EndUser>(totalCount, items.AsList());
+        var sqlResult = pgCompiler.Compile(baseQuery.Clone());
+        var users = await DbConnection.QueryAsync<EndUser>(sqlResult.Sql, sqlResult.NamedBindings);
+        return users.AsList();
     }
 
     public async Task<EndUser> UpsertAsync(EndUser user)
     {
-        var existed = await Queryable.FirstOrDefaultAsync(x => x.EnvId == user.EnvId && x.KeyId == user.KeyId);
-        if (existed == null)
+        if (user.Id == Guid.Empty)
         {
-            await AddOneAsync(user);
+            user.Id = Guid.NewGuid();
         }
-        else if (!existed.ValueEquals(user))
-        {
-            existed.Update(user.Name, user.CustomizedProperties);
-            await UpdateAsync(existed);
-        }
+
+        await DbConnection.ExecuteAsync(
+            """
+            INSERT INTO end_users (id, workspace_id, env_id, key_id, name, customized_properties, created_at, updated_at)
+            VALUES (@Id, @WorkspaceId, @EnvId, @KeyId, @Name, @Properties::jsonb, @CreatedAt, @UpdatedAt)
+            ON CONFLICT (env_id, key_id) DO UPDATE
+            SET name = EXCLUDED.name,
+                customized_properties = EXCLUDED.customized_properties,
+                updated_at = @UpdateTime
+            WHERE end_users.name IS DISTINCT FROM EXCLUDED.name
+               OR end_users.customized_properties IS DISTINCT FROM EXCLUDED.customized_properties
+            """,
+            new
+            {
+                user.Id, user.WorkspaceId, user.EnvId, user.KeyId, user.Name,
+                Properties = JsonSerializer.Serialize(user.CustomizedProperties, ReusableJsonSerializerOptions.Web),
+                user.CreatedAt, user.UpdatedAt,
+                UpdateTime = DateTime.UtcNow
+            });
 
         return user;
     }
 
-    public async Task<ImportUserResult> UpsertAsync(Guid? workspaceId, Guid? envId, IEnumerable<EndUser> endUsers)
+    public async Task<ImportUserResult> UpsertAsync(Guid? workspaceId, Guid? envId, EndUser[] endUsers)
     {
-        var total = await Queryable.Where(x => x.WorkspaceId == workspaceId && x.EnvId == envId).LongCountAsync();
-        if (total > 5 * 10000)
-        {
-            throw new BusinessException("The number of end users exceeds the limit.");
-        }
+        List<EndUser> existUsers;
 
-        // load all end users into memory
-        var existUsers = await Queryable
-            .Where(x => x.WorkspaceId == workspaceId && x.EnvId == envId)
-            .ToListAsync();
+        var keyIds = endUsers.Select(x => x.KeyId).Distinct().ToArray();
+        if (keyIds.Length < 1_000)
+        {
+            // for small batch, only load the users with the same keyIds to reduce memory usage
+            existUsers = await Queryable
+                .Where(x => x.WorkspaceId == workspaceId && x.EnvId == envId && keyIds.Contains(x.KeyId))
+                .ToListAsync();
+        }
+        else
+        {
+            // for large batch, load all users to avoid the performance issue of "where in" with too many keyIds
+            var total = await Queryable.Where(x => x.WorkspaceId == workspaceId && x.EnvId == envId).LongCountAsync();
+            if (total > EndUserConstants.EndUserLoadLimit)
+            {
+                throw new BusinessException(ErrorCodes.EndUserLimitExceeded);
+            }
+
+            existUsers = await Queryable
+                .Where(x => x.WorkspaceId == workspaceId && x.EnvId == envId)
+                .ToListAsync();
+        }
 
         var insertedCount = 0;
         var modifiedCount = 0;
 
-        // https://www.mongodb.com/docs/manual/reference/method/db.collection.bulkWrite/
         foreach (var endUser in endUsers)
         {
             var existing = existUsers.FirstOrDefault(x => x.KeyId == endUser.KeyId);
@@ -247,5 +344,20 @@ public class EndUserService(AppDbContext dbContext)
         }
 
         await properties.Where(x => x.Id == propertyId).ExecuteDeleteAsync();
+    }
+
+    private static Query TranslateFilter(Guid envId, EndUserFilter userFilter)
+    {
+        var query = new Query("end_users").Where("env_id", envId);
+
+        var text = userFilter.SearchText;
+        if (!string.IsNullOrEmpty(text))
+        {
+            query = query.Where(
+                x => x.OrWhereContains("key_id", text).OrWhereContains("name", text)
+            );
+        }
+
+        return query;
     }
 }

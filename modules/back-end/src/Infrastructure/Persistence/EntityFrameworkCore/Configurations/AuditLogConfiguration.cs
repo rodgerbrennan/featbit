@@ -1,4 +1,4 @@
-﻿using Domain.AuditLogs;
+using Domain.AuditLogs;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -10,11 +10,16 @@ public class AuditLogConfiguration : IEntityTypeConfiguration<AuditLog>
     {
         builder.ToTable("audit_logs");
 
-        builder.HasIndex(x => new { x.EnvId, x.RefId, x.CreatedAt });
+        builder.HasIndex(x => new { x.WorkspaceId, x.EnvId, x.CreatedAt, x.Id })
+            .IsDescending(false, false, true, true);
+        builder.HasIndex(x => new { x.WorkspaceId, x.RefType, x.RefId, x.CreatedAt, x.Id })
+            .IsDescending(false, false, false, true, true);
+        builder.HasIndex(x => new { x.WorkspaceId, x.OrganizationId, x.CreatedAt, x.Id })
+            .IsDescending(false, false, true, true);
 
         builder.Property(x => x.RefId).IsRequired();
         builder.Property(x => x.RefType).HasMaxLength(64).IsRequired();
-        builder.Property(x => x.Keyword).HasMaxLength(128).IsRequired();
+        builder.Property(x => x.Keyword).HasMaxLength(512).IsRequired();
         builder.Property(x => x.Operation).HasMaxLength(64).IsRequired();
         builder.Property(x => x.Comment).HasMaxLength(512);
         builder.Property(x => x.CreatedAt).IsRequired();

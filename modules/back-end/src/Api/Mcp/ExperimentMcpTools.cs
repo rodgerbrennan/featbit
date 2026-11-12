@@ -1,0 +1,418 @@
+using System.ComponentModel;
+using System.Text.Json;
+using Api.Authorization;
+using Application.Experiments;
+using Application.Services;
+using Domain.Policies;
+using ModelContextProtocol.Server;
+
+namespace Api.Mcp;
+
+[McpServerToolType]
+public class ExperimentMcpTools(
+    ISender mediator,
+    IExperimentService experimentService,
+    IHttpContextAccessor httpContextAccessor,
+    IPermissionChecker permissionChecker)
+{
+    [McpServerTool(Name = "featbit_experiment_get_experiment")]
+    [Description("Read an experiment by ID, including runs. The API resolves the FeatBit environment from the experiment.")]
+    public async Task<ExperimentDetailVm> GetExperiment(
+        [Description("Experiment ID.")]
+        Guid experimentId)
+    {
+        var envId = await ResolveAuthorizedEnvIdAsync(experimentId);
+
+        return await mediator.Send(new GetExperiment
+        {
+            EnvId = envId,
+            Id = experimentId
+        });
+    }
+
+    [McpServerTool(Name = "featbit_experiment_update_experiment")]
+    [Description("Patch experiment fields such as goal, intent, hypothesis, constraints, learning, and last action. Use metric registry tools plus featbit_experiment_update_metrics for primary metrics and guardrails. The API resolves the FeatBit environment from the experiment.")]
+    public async Task<ExperimentDetailVm> UpdateExperiment(
+        [Description("Experiment ID.")]
+        Guid experimentId,
+        [Description("Partial experiment update. Bind a feature flag using flagId from a Feature Flag read or create response. The flag must belong to the experiment environment. Leave fields null when they should not change.")]
+        ExperimentUpdate update)
+    {
+        var envId = await ResolveAuthorizedEnvIdAsync(experimentId);
+
+        return await mediator.Send(new UpdateExperiment
+        {
+            EnvId = envId,
+            Id = experimentId,
+            Update = update
+        });
+    }
+
+    [McpServerTool(Name = "featbit_experiment_set_stage")]
+    [Description("Move an experiment to a framework stage such as intent, hypothesis, implementing, measuring, or learning.")]
+    public async Task<ExperimentDetailVm> SetStage(
+        [Description("Experiment ID.")]
+        Guid experimentId,
+        [Description("Target experiment stage.")]
+        string stage)
+    {
+        var envId = await ResolveAuthorizedEnvIdAsync(experimentId);
+
+        return await mediator.Send(new UpdateExperimentStage
+        {
+            EnvId = envId,
+            Id = experimentId,
+            Stage = stage
+        });
+    }
+
+    [McpServerTool(Name = "featbit_experiment_update_metrics")]
+    [Description("Select registered metrics by metricId as defaults for future experiment runs. Provide primaryMetric with metricId and expectedDirection (increase_good or decrease_good), and guardrailMetrics as an array of metricId and direction (increase_bad or decrease_bad). Existing runs retain their independent metric snapshots. Metric names, SDK event names, types, and aggregations come from the metric registry.")]
+    public async Task<ExperimentDetailVm> UpdateMetrics(
+        [Description("Experiment ID.")]
+        Guid experimentId,
+        [Description("Primary metric and guardrail update payload.")]
+        ExperimentMetricsUpdate update)
+    {
+        var envId = await ResolveAuthorizedEnvIdAsync(experimentId);
+
+        return await mediator.Send(new UpdateExperimentMetrics
+        {
+            EnvId = envId,
+            Id = experimentId,
+            Update = update
+        });
+    }
+
+    [McpServerTool(Name = "featbit_experiment_create_run")]
+    [Description("Create an experiment run with an independent snapshot of the experiment's current primary metric and guardrails. Configure the experiment's primary metric first. The run's metric identity, SDK event name, calculation settings, and directions are fixed at creation.")]
+    public async Task<ExperimentDetailVm> CreateRun(
+        [Description("Experiment ID.")]
+        Guid experimentId)
+    {
+        var envId = await ResolveAuthorizedEnvIdAsync(experimentId);
+
+        return await mediator.Send(new CreateExperimentRun
+        {
+            EnvId = envId,
+            Id = experimentId
+        });
+    }
+
+    [McpServerTool(Name = "featbit_experiment_update_run")]
+    [Description("Patch an experiment run's method, variants, observations, analysis result, decision, or learning fields. Metric snapshots cannot be edited; update the experiment's metric defaults and create a new run to use different metrics.")]
+    public async Task<ExperimentDetailVm> UpdateRun(
+        [Description("Experiment ID.")]
+        Guid experimentId,
+        [Description("Experiment run ID.")]
+        Guid runId,
+        [Description("Partial run update. Leave fields null when they should not change.")]
+        ExperimentRunUpdate update)
+    {
+        var envId = await ResolveAuthorizedEnvIdAsync(experimentId);
+
+        return await mediator.Send(new UpdateExperimentRun
+        {
+            EnvId = envId,
+            Id = experimentId,
+            RunId = runId,
+            Update = update
+        });
+    }
+
+    [McpServerTool(Name = "featbit_experiment_update_run_traffic")]
+    [Description("Configure a run's analysis scope and sampling without modifying the Feature Flag. Supports layer ID/key, assignment unit, bucket slice start/end, traffic offset, allocation plan, and analysis sampling plan. Layer reservations are validated against observation windows, including future reservations. Decisions do not change reservations. Choose includeRate from actual exposure counts in the run window: desired analyzed users / observed served users * 100, capped at 100. Actual rollout, targeting, or flag toggle changes must use Feature Flag tools with explicit customer confirmation; a run decision is not confirmation.")]
+    public async Task<ExperimentDetailVm> UpdateRunTraffic(
+        [Description("Experiment ID.")]
+        Guid experimentId,
+        [Description("Experiment run ID.")]
+        Guid runId,
+        [Description("Run traffic/sampling update. Requires controlVariant, treatmentVariants, assignmentUnitSelector, layerTrafficPercent, and analysisSamplingPlan. Use sliceStart/sliceEnd for explicit layer bucket ranges such as 30-60.")]
+        ExperimentMcpRunTrafficRequest request)
+    {
+        var envId = await ResolveAuthorizedEnvIdAsync(experimentId);
+        var experiment = await experimentService.GetAsync(envId, experimentId);
+        if (!experiment.ExperimentRuns.Any(x => x.Id == runId))
+        {
+            throw new InvalidOperationException($"Run {runId} was not found in experiment {experimentId}.");
+        }
+
+        ValidateRunTrafficRequest(request);
+
+        return await mediator.Send(new UpdateExperimentRunAudience
+        {
+            EnvId = envId,
+            Id = experimentId,
+            RunId = runId,
+            Update = new ExperimentRunAudienceUpdate
+            {
+                Method = request.Method,
+                ControlVariant = request.ControlVariant,
+                TreatmentVariants = request.TreatmentVariants,
+                TrafficPercent = request.TrafficPercent,
+                TrafficOffset = request.TrafficOffset,
+                LayerId = request.LayerId,
+                LayerKey = Normalize(request.LayerKey),
+                AllocationKeySelector = Normalize(request.AllocationKeySelector),
+                SliceStart = request.SliceStart,
+                SliceEnd = request.SliceEnd,
+                AssignmentUnitSelector = request.AssignmentUnitSelector,
+                LayerTrafficPercent = request.LayerTrafficPercent,
+                AllocationPlan = Normalize(request.AllocationPlan),
+                AnalysisSamplingPlan = request.AnalysisSamplingPlan,
+            }
+        });
+    }
+
+    [McpServerTool(Name = "featbit_experiment_analyze_run")]
+    [Description("Run server-side analysis for an experiment run and return the refreshed experiment.")]
+    public async Task<ExperimentDetailVm> AnalyzeRun(
+        [Description("Experiment ID.")]
+        Guid experimentId,
+        [Description("Experiment run ID.")]
+        Guid runId,
+        [Description("When true, fetch fresh stats instead of reusing existing analysis input where possible.")]
+        bool forceFresh = false)
+    {
+        var envId = await ResolveAuthorizedEnvIdAsync(experimentId);
+
+        return await mediator.Send(new AnalyzeExperimentRun
+        {
+            EnvId = envId,
+            Id = experimentId,
+            RunId = runId,
+            Request = new ExperimentRunAnalyzeRequest { ForceFresh = forceFresh }
+        });
+    }
+
+    private static void ValidateRunTrafficRequest(
+        ExperimentMcpRunTrafficRequest request)
+    {
+        if (request is null)
+        {
+            throw new ArgumentException("Run traffic request is required.");
+        }
+
+        var method = Normalize(request.Method) ?? "bayesian_ab";
+        if (method != "bayesian_ab")
+        {
+            throw new ArgumentException("method must be bayesian_ab.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ControlVariant))
+        {
+            throw new ArgumentException("controlVariant is required.");
+        }
+
+        var treatments = (request.TreatmentVariants ?? [])
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x.Trim())
+            .ToArray();
+        if (treatments.Length == 0)
+        {
+            throw new ArgumentException("treatmentVariants must include at least one treatment variation.");
+        }
+
+        var assignmentUnitSelector = Normalize(request.AssignmentUnitSelector);
+        if (assignmentUnitSelector is null)
+        {
+            throw new ArgumentException("assignmentUnitSelector is required. Use user.keyId or an event property name.");
+        }
+
+        if (assignmentUnitSelector.Any(char.IsWhiteSpace))
+        {
+            throw new ArgumentException("assignmentUnitSelector cannot contain whitespace.");
+        }
+
+        if (request.LayerTrafficPercent is < 0 or > 100)
+        {
+            throw new ArgumentException("layerTrafficPercent must be between 0 and 100.");
+        }
+
+        if (request.TrafficPercent is < 1 or > 100)
+        {
+            throw new ArgumentException("trafficPercent must be between 1 and 100.");
+        }
+
+        if (request.TrafficOffset is < 0 or > 99)
+        {
+            throw new ArgumentException("trafficOffset must be between 0 and 99.");
+        }
+
+        if (request.SliceStart is < 0 or > 100)
+        {
+            throw new ArgumentException("sliceStart must be between 0 and 100.");
+        }
+
+        if (request.SliceEnd is < 0 or > 100)
+        {
+            throw new ArgumentException("sliceEnd must be between 0 and 100.");
+        }
+
+        if (request.SliceStart.HasValue && request.SliceEnd.HasValue && request.SliceEnd <= request.SliceStart)
+        {
+            throw new ArgumentException("sliceEnd must be greater than sliceStart.");
+        }
+
+        var planEntries = ParseSamplingPlan(request.AnalysisSamplingPlan);
+        var control = Normalize(request.ControlVariant)!;
+        var planControl = planEntries.Count(x => x.Role == "control" && x.Variation == control);
+        if (planControl != 1)
+        {
+            throw new ArgumentException("analysisSamplingPlan must contain exactly one control entry matching controlVariant.");
+        }
+
+        var treatmentSet = treatments.Select(Normalize).Where(x => x is not null).ToHashSet();
+        var treatmentEntries = planEntries
+            .Where(x => x.Role == "treatment" && treatmentSet.Contains(x.Variation))
+            .Select(x => x.Variation)
+            .ToHashSet();
+        if (!treatmentSet.SetEquals(treatmentEntries))
+        {
+            throw new ArgumentException("analysisSamplingPlan must contain one treatment entry for every id in treatmentVariants.");
+        }
+    }
+
+    private static SamplingPlanEntry[] ParseSamplingPlan(string analysisSamplingPlan)
+    {
+        if (string.IsNullOrWhiteSpace(analysisSamplingPlan))
+        {
+            throw new ArgumentException("analysisSamplingPlan is required.");
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(analysisSamplingPlan);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                throw new ArgumentException("analysisSamplingPlan must be a JSON array.");
+            }
+
+            var entries = new List<SamplingPlanEntry>();
+            foreach (var item in document.RootElement.EnumerateArray())
+            {
+                var variation = Normalize(GetJsonString(item, "variation"));
+                var role = Normalize(GetJsonString(item, "role")) ?? "treatment";
+                if (variation is null)
+                {
+                    throw new ArgumentException("Each analysisSamplingPlan entry requires variation.");
+                }
+
+                if (role is not ("control" or "treatment" or "holdout" or "exclude"))
+                {
+                    throw new ArgumentException("Sampling plan role must be control, treatment, holdout, or exclude.");
+                }
+
+                if (!TryGetJsonDouble(item, "includeRate", out var includeRate))
+                {
+                    includeRate = 100;
+                }
+
+                if (includeRate is < 0 or > 100)
+                {
+                    throw new ArgumentException("Sampling plan includeRate must be between 0 and 100.");
+                }
+
+                entries.Add(new SamplingPlanEntry(variation, role, includeRate));
+            }
+
+            if (entries.Count == 0)
+            {
+                throw new ArgumentException("analysisSamplingPlan must contain at least one entry.");
+            }
+
+            return entries.ToArray();
+        }
+        catch (JsonException ex)
+        {
+            throw new ArgumentException("analysisSamplingPlan must be valid JSON.", ex);
+        }
+    }
+
+    private static string? Normalize(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string? GetJsonString(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : null;
+    }
+
+    private static bool TryGetJsonDouble(JsonElement element, string propertyName, out double value)
+    {
+        value = 0;
+        return element.TryGetProperty(propertyName, out var property) &&
+               property.TryGetDouble(out value);
+    }
+
+    private async Task<Guid> ResolveAuthorizedEnvIdAsync(Guid experimentId)
+    {
+        var envId = await experimentService.GetEnvIdAsync(experimentId);
+        await EnsureCanAccessEnvPermissionAsync(envId);
+        return envId;
+    }
+
+    private async Task EnsureCanAccessEnvPermissionAsync(Guid envId)
+    {
+        var httpContext = httpContextAccessor.HttpContext
+                          ?? throw new InvalidOperationException("MCP request context is unavailable.");
+
+        httpContext.Request.RouteValues["envId"] = envId.ToString();
+        var requirement = new PermissionRequirement(Permissions.CanAccessEnv);
+
+        if (!await permissionChecker.IsGrantedAsync(httpContext, requirement))
+        {
+            throw new UnauthorizedAccessException($"Current principal cannot access environment {envId}.");
+        }
+    }
+
+    private sealed record SamplingPlanEntry(string Variation, string Role, double IncludeRate);
+}
+
+public class ExperimentMcpRunTrafficRequest
+{
+    [Description("Run analysis method. Use bayesian_ab for Bayesian A/B/n analysis.")]
+    public string Method { get; set; } = string.Empty;
+
+    [Description("Control variation ID from the bound feature flag.")]
+    public string ControlVariant { get; set; } = string.Empty;
+
+    [Description("Array of treatment variation IDs from the bound feature flag. Include one ID per array element.")]
+    public string[] TreatmentVariants { get; set; } = [];
+
+    [Description("Optional mutual-exclusion layer key. The layer gates eligibility only and does not decide the served variation.")]
+    public string LayerKey { get; set; } = string.Empty;
+
+    [Description("Optional mutual-exclusion layer ID. Prefer layerKey when the user is selecting by registered layer key.")]
+    public Guid? LayerId { get; set; }
+
+    [Description("Legacy analysis traffic percentage, from 1 to 100. Prefer sliceStart/sliceEnd plus layerTrafficPercent for layer bucket assignments.")]
+    public double? TrafficPercent { get; set; }
+
+    [Description("Legacy analysis traffic offset bucket, from 0 to 99. Prefer sliceStart/sliceEnd for explicit bucket assignments.")]
+    public int? TrafficOffset { get; set; }
+
+    [Description("Optional allocation key selector retained for backward compatibility. Prefer assignmentUnitSelector.")]
+    public string AllocationKeySelector { get; set; } = string.Empty;
+
+    [Description("Inclusive bucket start for the layer eligibility slice, from 0 to 100.")]
+    public double? SliceStart { get; set; }
+
+    [Description("Exclusive bucket end for the layer eligibility slice, from 0 to 100 and greater than sliceStart.")]
+    public double? SliceEnd { get; set; }
+
+    [Description("Assignment unit selector. Use user.keyId for event user_key, or a custom event property name that exists on exposure and metric events.")]
+    public string AssignmentUnitSelector { get; set; } = string.Empty;
+
+    [Description("Percentage of assignment units eligible for this run inside the layer, from 0 to 100.")]
+    public double? LayerTrafficPercent { get; set; }
+
+    [Description("JSON array of { variation, role, includeRate, label? }. Sampling is applied inside each actual served variation.")]
+    public string AnalysisSamplingPlan { get; set; } = string.Empty;
+
+    [Description("Optional legacy JSON allocation plan. Prefer analysisSamplingPlan unless intentionally reproducing allocation-plan behavior.")]
+    public string AllocationPlan { get; set; } = string.Empty;
+}

@@ -31,11 +31,11 @@ public class ClientSdkFlag
 {
     public string Id { get; set; }
 
-    public string Variation { get; set; }
+    public string? Variation { get; set; }
 
     public string VariationType { get; set; }
 
-    public string VariationId { get; set; }
+    public string? VariationId { get; set; }
 
     public string MatchReason { get; set; }
 
@@ -43,17 +43,23 @@ public class ClientSdkFlag
 
     public bool SendToExperiment { get; set; }
 
+    public bool InsightsEnabled { get; set; }
+
     public long Timestamp { get; set; }
 
     public ClientSdkFlag(JsonElement flag, UserVariation userVariation, Variation[] allVariations)
     {
-        Id = flag.GetProperty("key").GetString()!;
-        Variation = userVariation.Variation.Value;
-        VariationId = userVariation.Variation.Id;
-        VariationType = flag.GetProperty("variationType").GetString() ?? "string";
-        MatchReason = userVariation.MatchReason;
+        var reader = EntityJsonReader.FeatureFlag;
+
+        Id = reader.GetRequiredString(flag, "key");
+        VariationType = reader.GetNullableString(flag, "variationType") ?? "string";
         VariationOptions = allVariations;
+        Timestamp = reader.GetRequiredDateTimeOffset(flag, "updatedAt").ToUnixTimeMilliseconds();
+        InsightsEnabled = EntityJsonReader.TryGetBoolean(flag, "insightsEnabled") ?? true;
+
+        Variation = userVariation.Variation?.Value;
+        VariationId = userVariation.Variation?.Id;
+        MatchReason = userVariation.MatchReason;
         SendToExperiment = userVariation.SendToExperiment;
-        Timestamp = flag.GetProperty("updatedAt").GetDateTimeOffset().ToUnixTimeMilliseconds();
     }
 }

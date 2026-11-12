@@ -1,7 +1,10 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Infrastructure.OLAP;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using MongoServices = Infrastructure.Services.MongoDb;
 using EntityFrameworkCoreServices = Infrastructure.Services.EntityFrameworkCore;
+using ClickHouseServices = Infrastructure.Services.ClickHouse;
 
 namespace Infrastructure.Persistence;
 
@@ -10,16 +13,25 @@ public static class DbServiceCollectionExtensions
     public static void AddDbSpecificServices(this IServiceCollection services, IConfiguration configuration)
     {
         var dbProvider = configuration.GetDbProvider();
-
         switch (dbProvider.Name)
         {
             case DbProvider.MongoDb:
                 AddMongoDbServices();
                 break;
 
-            default:
+            case DbProvider.Postgres:
                 AddEntityFrameworkCoreServices();
                 break;
+        }
+
+        var olapProvider = configuration.GetOLAPProvider();
+        if (olapProvider == OLAPProvider.ClickHouse)
+        {
+            services.TryAddClickHouse(configuration);
+
+            services.Replace(ServiceDescriptor.Transient<IInsightService, ClickHouseServices.InsightService>());
+            services.Replace(ServiceDescriptor.Transient<IEndUserStatsService, ClickHouseServices.EndUserStatsService>());
+            services.Replace(ServiceDescriptor.Transient<IExperimentStatsService, ClickHouseServices.ExperimentStatsService>());
         }
 
         return;
@@ -45,8 +57,12 @@ public static class DbServiceCollectionExtensions
             services.AddTransient<IGlobalUserService, MongoServices.GlobalUserService>();
             services.AddTransient<ISegmentService, MongoServices.SegmentService>();
             services.AddTransient<IFeatureFlagService, MongoServices.FeatureFlagService>();
+            services.AddTransient<IEndUserStatsService, MongoServices.EndUserStatsService>();
+            services.AddTransient<IExperimentStatsService, MongoServices.ExperimentStatsService>();
+            services.AddTransient<IInsightService, MongoServices.InsightService>();
             services.AddTransient<ITriggerService, MongoServices.TriggerService>();
             services.AddTransient<IExperimentService, MongoServices.ExperimentService>();
+            services.AddTransient<IExperimentLayerService, MongoServices.ExperimentLayerService>();
             services.AddTransient<IExperimentMetricService, MongoServices.ExperimentMetricService>();
             services.AddTransient<IAuditLogService, MongoServices.AuditLogService>();
             services.AddTransient<IAccessTokenService, MongoServices.AccessTokenService>();
@@ -56,7 +72,9 @@ public static class DbServiceCollectionExtensions
             services.AddTransient<IFlagRevisionService, MongoServices.FlagRevisionService>();
             services.AddTransient<IFlagChangeRequestService, MongoServices.FlagChangeRequestService>();
             services.AddTransient<IWebhookService, MongoServices.WebhookService>();
-            services.AddTransient<IInsightService, MongoServices.InsightService>();
+            services.AddTransient<IRefreshTokenService, MongoServices.RefreshTokenService>();
+            services.AddTransient<Application.ControlPlane.ILeaseStore, MongoServices.MongoLeaseStore>();
+            services.AddTransient<IMcpAuthorizationStore, MongoServices.McpAuthorizationStore>();
         }
 
         void AddEntityFrameworkCoreServices()
@@ -83,8 +101,12 @@ public static class DbServiceCollectionExtensions
             services.AddTransient<IGlobalUserService, EntityFrameworkCoreServices.GlobalUserService>();
             services.AddTransient<ISegmentService, EntityFrameworkCoreServices.SegmentService>();
             services.AddTransient<IFeatureFlagService, EntityFrameworkCoreServices.FeatureFlagService>();
+            services.AddTransient<IEndUserStatsService, EntityFrameworkCoreServices.EndUserStatsService>();
+            services.AddTransient<IExperimentStatsService, EntityFrameworkCoreServices.ExperimentStatsService>();
+            services.AddTransient<IInsightService, EntityFrameworkCoreServices.InsightService>();
             services.AddTransient<ITriggerService, EntityFrameworkCoreServices.TriggerService>();
             services.AddTransient<IExperimentService, EntityFrameworkCoreServices.ExperimentService>();
+            services.AddTransient<IExperimentLayerService, EntityFrameworkCoreServices.ExperimentLayerService>();
             services.AddTransient<IExperimentMetricService, EntityFrameworkCoreServices.ExperimentMetricService>();
             services.AddTransient<IAuditLogService, EntityFrameworkCoreServices.AuditLogService>();
             services.AddTransient<IAccessTokenService, EntityFrameworkCoreServices.AccessTokenService>();
@@ -94,7 +116,9 @@ public static class DbServiceCollectionExtensions
             services.AddTransient<IFlagRevisionService, EntityFrameworkCoreServices.FlagRevisionService>();
             services.AddTransient<IFlagChangeRequestService, EntityFrameworkCoreServices.FlagChangeRequestService>();
             services.AddTransient<IWebhookService, EntityFrameworkCoreServices.WebhookService>();
-            services.AddTransient<IInsightService, EntityFrameworkCoreServices.InsightService>();
+            services.AddTransient<IRefreshTokenService, EntityFrameworkCoreServices.RefreshTokenService>();
+            services.AddTransient<Application.ControlPlane.ILeaseStore, EntityFrameworkCoreServices.PostgresLeaseStore>();
+            services.AddTransient<IMcpAuthorizationStore, EntityFrameworkCoreServices.McpAuthorizationStore>();
         }
     }
 }

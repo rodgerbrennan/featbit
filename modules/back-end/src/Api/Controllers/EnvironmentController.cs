@@ -1,42 +1,79 @@
+using Api.Authentication;
 using Application.Environments;
+using Domain.Policies;
 
 namespace Api.Controllers;
 
 [Route("api/v{version:apiVersion}/projects/{projectId:guid}/envs")]
 public class EnvironmentController : ApiControllerBase
 {
+    /// <summary>
+    /// Get an environment
+    /// </summary>
+    /// <remarks>
+    /// Get a single environment by ID.
+    /// </remarks>
+    [OpenApi]
     [HttpGet]
-    [Route("{envId:guid}")]
-    public async Task<ApiResponse<EnvironmentVm>> GetAsync(Guid envId)
+    [Route("{id:guid}")]
+    [Authorize(Permissions.CanAccessEnv)]
+    public async Task<ApiResponse<EnvironmentVm>> GetAsync(Guid id)
     {
         var request = new GetEnvironment
         {
-            Id = envId
+            Id = id,
+            Permissions = await GetRequestPermissionsAsync()
         };
 
-        var project = await Mediator.Send(request);
-        return Ok(project);
+        var env = await Mediator.Send(request);
+        return Ok(env);
     }
 
+    /// <summary>
+    /// Create an environment
+    /// </summary>
+    /// <remarks>
+    /// Create a new environment with the given name, key and description.
+    /// </remarks>
+    [OpenApi]
     [HttpPost]
-    public async Task<ApiResponse<EnvironmentVm>> CreateAsync(Guid projectId, CreateEnvironment request)
+    [Authorize(Permissions.CreateEnv)]
+    public async Task<ApiResponse<EnvironmentVm>> CreateAsync(Guid projectId, CreateEnvironmentPayload payload)
     {
-        request.ProjectId = projectId;
+        var permissions = await GetRequestPermissionsAsync();
+        var request = new CreateEnvironment(projectId, payload, permissions);
 
         var env = await Mediator.Send(request);
         return Ok(env);
     }
 
+    /// <summary>
+    /// Update an environment
+    /// </summary>
+    /// <remarks>
+    /// Update the name and description of an existing environment.
+    /// </remarks>
+    [OpenApi]
     [HttpPut("{id:guid}")]
-    public async Task<ApiResponse<EnvironmentVm>> UpdateAsync(Guid id, UpdateEnvironment request)
+    [Authorize(Permissions.UpdateEnvSettings)]
+    public async Task<ApiResponse<EnvironmentVm>> UpdateAsync(Guid id, UpdateEnvironmentPayload payload)
     {
-        request.Id = id;
+        var permissions = await GetRequestPermissionsAsync();
+        var request = new UpdateEnvironment(id, payload, permissions);
 
         var env = await Mediator.Send(request);
         return Ok(env);
     }
 
+    /// <summary>
+    /// Delete an environment
+    /// </summary>
+    /// <remarks>
+    /// Permanently delete an environment and all its associated data. This action cannot be undone.
+    /// </remarks>
+    [OpenApi]
     [HttpDelete("{id:guid}")]
+    [Authorize(Permissions.DeleteEnv)]
     public async Task<ApiResponse<bool>> DeleteAsync(Guid id)
     {
         var request = new DeleteEnvironment

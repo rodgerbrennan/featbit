@@ -6,7 +6,7 @@ namespace Application.FeatureFlags;
 public class GetInsights : IRequest<IEnumerable<InsightsVm>>
 {
     public Guid EnvId { get; set; }
-    public StatsByVariationFilter Filter { get; set; }
+    public InsightFilter Filter { get; set; }
 }
 
 public class GetInsightsValidator : AbstractValidator<GetInsights>
@@ -20,38 +20,21 @@ public class GetInsightsValidator : AbstractValidator<GetInsights>
             .Must(IntervalType.IsDefined).WithErrorCode(ErrorCodes.Invalid("intervalType"));
 
         RuleFor(x => x.Filter.From)
-            .GreaterThan(0).WithErrorCode(ErrorCodes.Invalid("from"));
+            .LessThanOrEqualTo(x => x.Filter.To).WithErrorCode(ErrorCodes.Invalid("from"));
 
         RuleFor(x => x.Filter.To)
             .GreaterThan(0).WithErrorCode(ErrorCodes.Invalid("to"));
     }
 }
 
-public class GetInsightsHandler : IRequestHandler<GetInsights, IEnumerable<InsightsVm>>
+public class GetInsightsHandler(IFeatureFlagService flagService, IInsightService insightService)
+    : IRequestHandler<GetInsights, IEnumerable<InsightsVm>>
 {
-    private readonly IFeatureFlagService _service;
-    private readonly IOlapService _olapService;
-
-    public GetInsightsHandler(IFeatureFlagService service, IOlapService olapService)
-    {
-        _service = service;
-        _olapService = olapService;
-    }
-
     public async Task<IEnumerable<InsightsVm>> Handle(GetInsights request, CancellationToken cancellationToken)
     {
-        var featureFlag = await _service.GetAsync(request.EnvId, request.Filter.FeatureFlagKey);
+        var featureFlag = await flagService.GetAsync(request.EnvId, request.Filter.FeatureFlagKey);
 
-        var param = new InsightsParam
-        {
-            EnvId = request.EnvId,
-            FlagExptId = $"{request.EnvId}-{request.Filter.FeatureFlagKey}",
-            IntervalType = request.Filter.IntervalType,
-            StartTime = request.Filter.From,
-            EndTime = request.Filter.To
-        };
-
-        var stats = await _olapService.GetFeatureFlagInsights(param);
+        var stats = await insightService.GetInsightsAsync(request.EnvId, request.Filter);
 
         return stats.Select(s => new InsightsVm
         {

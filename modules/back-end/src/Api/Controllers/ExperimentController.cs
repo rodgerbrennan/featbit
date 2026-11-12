@@ -1,126 +1,218 @@
 using Application.Bases.Models;
-using Application.ExperimentMetrics;
 using Application.Experiments;
-using Application.FeatureFlags;
-using Domain.Experiments;
+using Api.Authentication;
+using Domain.Policies;
 
 namespace Api.Controllers;
 
+[Authorize(Permissions.CanAccessEnv)]
 [Route("api/v{version:apiVersion}/envs/{envId:guid}/experiments")]
 public class ExperimentController : ApiControllerBase
 {
-    [HttpGet]
-    public async Task<ApiResponse<PagedResult<ExperimentVm>>> GetListAsync(
-        Guid envId,
-        [FromQuery] ExperimentFilter filter)
-    {
-        var request = new GetExperimentList
-        {
-            EnvId = envId,
-            Filter = filter
-        };
-
-        var expts = await Mediator.Send(request);
-        return Ok(expts);
-    }
-    
+    [OpenApi]
     [HttpPost]
-    public async Task<ApiResponse<Experiment>> CreateAsync(Guid envId, CreateExperiment request)
+    public async Task<ApiResponse<ExperimentVm>> CreateAsync(
+        Guid envId,
+        CreateExperiment request)
     {
         request.EnvId = envId;
 
         var experiment = await Mediator.Send(request);
         return Ok(experiment);
     }
-    
-    [HttpGet("variation-experiment-references")]
-    public async Task<ApiResponse<ICollection<ExperimentVm>>> GetVariationReferencesAsync(Guid envId, Guid flagId, string variationId)
+
+    [OpenApi]
+    [HttpGet]
+    public async Task<ApiResponse<PagedResult<ExperimentVm>>> GetListAsync(
+        Guid envId,
+        [FromQuery] ExperimentFilter filter)
     {
-        var request = new GetVariationReferences
+        var request = new QueryExperiments
         {
             EnvId = envId,
-            FlagId = flagId,
-            VariationId = variationId
+            Filter = filter
         };
 
-        var expts = await Mediator.Send(request);
-        return Ok(expts);
+        var experiments = await Mediator.Send(request);
+        return Ok(experiments);
     }
 
-    [HttpGet("status-count")]
-    public async Task<ApiResponse<IEnumerable<ExperimentStatusCountVm>>> GetExperimentStatusCounterAsync(Guid envId)
+    [OpenApi]
+    [HttpGet("{id:guid}")]
+    public async Task<ApiResponse<ExperimentDetailVm>> GetAsync(Guid envId, Guid id)
     {
-        var request = new GetExperimentStatusCount
-        {
-            EnvId = envId
-        };
-
-        var status = await Mediator.Send(request);
-        return Ok(status);
-    }
-    
-    [HttpPut("iteration-results")]
-    public async Task<ApiResponse<IEnumerable<ExperimentIterationResultsVm>>> GetExperimentIterationResultsAsync(Guid envId, IEnumerable<ExperimentIterationParam> experimentIterationParam)
-    {
-        var request = new GetExperimentIterationResults
+        var experiment = await Mediator.Send(new GetExperiment
         {
             EnvId = envId,
-            ExperimentIterationParam = experimentIterationParam
-        };
+            Id = id
+        });
 
-        var results = await Mediator.Send(request);
-        return Ok(results);
+        return Ok(experiment);
     }
 
-    [HttpPost("{experimentId:guid}")]
-    public async Task<ApiResponse<ExperimentIteration>> StartAsync(Guid envId, Guid experimentId)
+    [OpenApi]
+    [HttpDelete("{id:guid}")]
+    public async Task<ApiResponse<bool>> DeleteAsync(Guid envId, Guid id)
     {
-        var request = new StartExperiment
+        await Mediator.Send(new DeleteExperiment
         {
             EnvId = envId,
-            ExperimentId = experimentId
-        };
+            Id = id
+        });
 
-        var iteration = await Mediator.Send(request);
-        return Ok(iteration);
+        return Ok(true);
     }
 
-    [HttpDelete("{experimentId}/iterations")]
-    public async Task<ApiResponse<bool>> ArchiveExperimentIterations(Guid envId, Guid experimentId)
+    [OpenApi]
+    [HttpPut("{id:guid}")]
+    public async Task<ApiResponse<ExperimentDetailVm>> UpdateAsync(
+        Guid envId,
+        Guid id,
+        ExperimentUpdate update)
     {
-        var request = new ArchiveExperimentIterations
+        var experiment = await Mediator.Send(new UpdateExperiment
         {
             EnvId = envId,
-            ExperimentId = experimentId
-        };
+            Id = id,
+            Update = update
+        });
 
-        var success = await Mediator.Send(request);
-        return Ok(success);
+        return Ok(experiment);
     }
 
-    [HttpPut("{experimentId:guid}")]
-    public async Task<ApiResponse<bool>> StopAsync(Guid envId, Guid experimentId)
+    [OpenApi]
+    [HttpPut("{id:guid}/stage")]
+    public async Task<ApiResponse<ExperimentDetailVm>> UpdateStageAsync(
+        Guid envId,
+        Guid id,
+        UpdateExperimentStage request)
     {
-        var request = new StopExperiment
+        request.EnvId = envId;
+        request.Id = id;
+
+        var experiment = await Mediator.Send(request);
+        return Ok(experiment);
+    }
+
+    [OpenApi]
+    [HttpPut("{id:guid}/metrics")]
+    public async Task<ApiResponse<ExperimentDetailVm>> UpdateMetricsAsync(
+        Guid envId,
+        Guid id,
+        ExperimentMetricsUpdate update)
+    {
+        var experiment = await Mediator.Send(new UpdateExperimentMetrics
         {
             EnvId = envId,
-            ExperimentId = experimentId
-        };
+            Id = id,
+            Update = update
+        });
 
-        var success = await Mediator.Send(request);
-        return Ok(success);
+        return Ok(experiment);
     }
 
-    [HttpDelete("{experimentId}")]
-    public async Task<ApiResponse<bool>> ArchiveExperimentAsync(Guid envId, Guid experimentId)
+    [OpenApi]
+    [HttpPost("{id:guid}/runs")]
+    public async Task<ApiResponse<ExperimentDetailVm>> CreateRunAsync(Guid envId, Guid id, ExperimentRunCreate setup)
     {
-        var request = new ArchiveExperiment
+        var experiment = await Mediator.Send(new CreateExperimentRun
+        {
+            Setup = setup,
+            EnvId = envId,
+            Id = id
+        });
+
+        return Ok(experiment);
+    }
+
+    [OpenApi]
+    [HttpDelete("{id:guid}/runs/{runId:guid}")]
+    public async Task<ApiResponse<ExperimentDetailVm>> DeleteRunAsync(Guid envId, Guid id, Guid runId)
+    {
+        var experiment = await Mediator.Send(new DeleteExperimentRun
         {
             EnvId = envId,
-            ExperimentId = experimentId
-        };
+            Id = id,
+            RunId = runId
+        });
 
-        var success = await Mediator.Send(request);
-        return Ok(success);
+        return Ok(experiment);
     }
+
+    [OpenApi]
+    [HttpPut("{id:guid}/runs/{runId:guid}")]
+    public async Task<ApiResponse<ExperimentDetailVm>> UpdateRunAsync(
+        Guid envId,
+        Guid id,
+        Guid runId,
+        ExperimentRunUpdate update)
+    {
+        var experiment = await Mediator.Send(new UpdateExperimentRun
+        {
+            EnvId = envId,
+            Id = id,
+            RunId = runId,
+            Update = update
+        });
+
+        return Ok(experiment);
+    }
+
+    [OpenApi]
+    [HttpPut("{id:guid}/runs/{runId:guid}/audience")]
+    public async Task<ApiResponse<ExperimentDetailVm>> UpdateRunAudienceAsync(
+        Guid envId,
+        Guid id,
+        Guid runId,
+        ExperimentRunAudienceUpdate update)
+    {
+        var experiment = await Mediator.Send(new UpdateExperimentRunAudience
+        {
+            EnvId = envId,
+            Id = id,
+            RunId = runId,
+            Update = update
+        });
+
+        return Ok(experiment);
+    }
+
+    [OpenApi]
+    [HttpPut("{id:guid}/runs/{runId:guid}/observation-window")]
+    public async Task<ApiResponse<ExperimentDetailVm>> UpdateRunObservationWindowAsync(
+        Guid envId,
+        Guid id,
+        Guid runId,
+        ExperimentRunObservationWindowUpdate update)
+    {
+        var experiment = await Mediator.Send(new UpdateExperimentRunObservationWindow
+        {
+            EnvId = envId,
+            Id = id,
+            RunId = runId,
+            Update = update
+        });
+
+        return Ok(experiment);
+    }
+
+    [OpenApi]
+    [HttpPost("{id:guid}/runs/{runId:guid}/analyze")]
+    public async Task<ApiResponse<ExperimentDetailVm>> AnalyzeRunAsync(
+        Guid envId,
+        Guid id,
+        Guid runId,
+        ExperimentRunAnalyzeRequest request)
+    {
+        var experiment = await Mediator.Send(new AnalyzeExperimentRun
+        {
+            EnvId = envId,
+            Id = id,
+            RunId = runId,
+            Request = request
+        });
+
+        return Ok(experiment);
+    }
+
 }

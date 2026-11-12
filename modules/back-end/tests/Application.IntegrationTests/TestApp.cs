@@ -2,6 +2,8 @@ using System.Net.Http.Headers;
 using System.Net.Mime;
 using System.Text;
 using System.Text.Json;
+using Api.Authorization;
+using Application.Identity;
 using Application.Services;
 using Application.Users;
 using Domain.Users;
@@ -11,6 +13,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -20,6 +23,18 @@ namespace Application.IntegrationTests;
 
 public class TestApp : WebApplicationFactory<Program>
 {
+    public WebApplicationFactory<Program> WithServices(Action<IServiceCollection> configure) =>
+        WithWebHostBuilder(builder => builder.ConfigureTestServices(configure));
+
+    public async Task<HttpClient> CreateAuthenticatedClientAsync(WebApplicationFactory<Program> factory,
+        bool includeTenantContext = false)
+    {
+        var client = factory.CreateClient();
+        await AddAuthorizationHeader(client);
+        if (includeTenantContext) TestTenantContext.AddHeaders(client);
+        return client;
+    }
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseSetting(MqProvider.SectionName, MqProvider.None);
@@ -39,6 +54,15 @@ public class TestApp : WebApplicationFactory<Program>
 
             collection.Replace(ServiceDescriptor.Transient<IWorkspaceService, TestWorkspaceService>());
             collection.Replace(ServiceDescriptor.Transient<IUserService, TestUserService>());
+            collection.Replace(ServiceDescriptor.Singleton(TestTenantContext.CreateOrganizationService().Object));
+            collection.Replace(ServiceDescriptor.Transient<IRefreshTokenService, TestRefreshTokenService>());
+
+            // Replace IPermissionChecker so [Authorize(Permissions.X)] routes don't
+            // hit Postgres via DefaultPermissionChecker.GetRnAsync during auth pipeline
+            // evaluation. With Grant=true the policy succeeds; AuthorizationMiddleware
+            // still issues 401 for unauthenticated requests because the combined policy
+            // also includes DenyAnonymousAuthorizationRequirement.
+            collection.Replace(ServiceDescriptor.Singleton<IPermissionChecker>(new TestPermissionChecker { Grant = true }));
 
             var hostedServices = collection.Where(x =>
                 x.ServiceType.IsAssignableTo(typeof(IHostedService)) &&
@@ -62,7 +86,8 @@ public class TestApp : WebApplicationFactory<Program>
         var client = CreateClient();
         if (authenticated)
         {
-            AddAuthorizationHeader(client);
+            await AddAuthorizationHeader(client);
+            TestTenantContext.AddHeaders(client);
         }
 
         return await client.GetAsync(uri);
@@ -76,7 +101,8 @@ public class TestApp : WebApplicationFactory<Program>
         var client = CreateClient();
         if (authenticated)
         {
-            AddAuthorizationHeader(client);
+            await AddAuthorizationHeader(client);
+            TestTenantContext.AddHeaders(client);
         }
 
         var body = JsonSerializer.Serialize(payload);
@@ -85,21 +111,21 @@ public class TestApp : WebApplicationFactory<Program>
         return await client.PostAsync(uri, content);
     }
 
-    public string GetToken(User user)
+    public async Task<AuthTokens> GetTokenAsync(User user)
     {
         var scopeFactory = Services.GetRequiredService<IServiceScopeFactory>();
         using var scope = scopeFactory.CreateScope();
         var identityService = scope.ServiceProvider.GetRequiredService<IIdentityService>();
 
-        var token = identityService.IssueToken(user);
-        return token;
+        var tokens = await identityService.IssueTokensAsync(user, "::1");
+        return tokens;
     }
 
-    private void AddAuthorizationHeader(HttpClient client)
+    private async Task AddAuthorizationHeader(HttpClient client)
     {
-        var token = GetToken(TestUser.Instance());
+        var authTokens = await GetTokenAsync(TestUser.Instance());
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
-            JwtBearerDefaults.AuthenticationScheme, token
+            JwtBearerDefaults.AuthenticationScheme, authTokens.AccessToken
         );
     }
 }

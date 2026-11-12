@@ -6,14 +6,26 @@ public abstract class UserVariation
 {
     public abstract bool SendToExperiment { get; }
 
-    public Variation Variation { get; set; }
+    public Variation? Variation { get; set; }
 
     public string MatchReason { get; set; }
 
-    protected UserVariation(Variation variation, string matchReason)
+    protected UserVariation(Variation? variation, string matchReason)
     {
         Variation = variation;
         MatchReason = matchReason;
+    }
+}
+
+public sealed class NullUserVariation : UserVariation
+{
+    public static readonly NullUserVariation Instance = new();
+
+    public override bool SendToExperiment => false;
+
+    private NullUserVariation()
+        : base(null, "flag archived")
+    {
     }
 }
 
@@ -54,15 +66,28 @@ public sealed class RolloutUserVariation : UserVariation
         var dispatchRollout = 0.0;
         var exptRollout = 0.0;
 
+        var reader = EntityJsonReader.FeatureFlag;
         foreach (var rolloutVariation in rolloutVariations.EnumerateArray())
         {
-            var rollouts = rolloutVariation.GetProperty("rollout").Deserialize<double[]>()!;
+            var rollouts = reader.DeserializeRequiredArray<double>(rolloutVariation, "rollout");
+            if (rollouts.Length != 2)
+            {
+                throw reader.Malformed(
+                    "Property 'rollout' must contain exactly two numbers",
+                    "rollout"
+                );
+            }
+
             if (DispatchAlgorithm.IsInRollout(dispatchKey, rollouts))
             {
-                var variationId = rolloutVariation.GetProperty("id").GetString()!;
-                Variation = allVariations.FirstOrDefault(x => x.Id == variationId)!;
+                var variationId = reader.GetRequiredString(rolloutVariation, "id");
+                Variation = allVariations.FirstOrDefault(x => x.Id == variationId) ??
+                            throw reader.Malformed(
+                                $"Rollout references variation '{variationId}' which does not exist in the feature flag",
+                                "id"
+                            );
                 dispatchRollout = rollouts[1] - rollouts[0];
-                exptRollout = rolloutVariation.GetProperty("exptRollout").GetDouble();
+                exptRollout = reader.GetRequiredDouble(rolloutVariation, "exptRollout");
                 break;
             }
         }

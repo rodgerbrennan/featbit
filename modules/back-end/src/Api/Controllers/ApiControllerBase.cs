@@ -1,7 +1,9 @@
 using System.Net.Mime;
+using Api.Authorization;
 using Api.Filters;
 using Application.Users;
-using Swashbuckle.AspNetCore.Annotations;
+using Domain.Policies;
+using Microsoft.AspNetCore.Mvc;
 
 namespace Api.Controllers;
 
@@ -9,9 +11,9 @@ namespace Api.Controllers;
 [ApiController]
 [VerifyOpenApiApplicable]
 [Produces(MediaTypeNames.Application.Json)]
-[SwaggerResponse(200)]
-[SwaggerResponse(401)]
-[SwaggerResponse(403)]
+[ProducesResponseType(StatusCodes.Status200OK)]
+[ProducesResponseType(StatusCodes.Status401Unauthorized)]
+[ProducesResponseType(StatusCodes.Status403Forbidden)]
 [Route("api/v{version:apiVersion}/[controller]")]
 public class ApiControllerBase : ControllerBase
 {
@@ -37,15 +39,11 @@ public class ApiControllerBase : ControllerBase
                 return _orgId.Value;
             }
 
-            var orgIdHeaderValue = HttpContext.Request.Headers[ApiConstants.OrgIdHeaderKey];
-
-            _orgId = Guid.TryParse(orgIdHeaderValue, out var orgId)
-                ? orgId
-                : Guid.Empty;
+            _orgId = HttpContext.Request.OrganizationId();
             return _orgId.Value;
         }
     }
-    
+
     private Guid? _workspaceId;
     protected Guid WorkspaceId
     {
@@ -56,13 +54,16 @@ public class ApiControllerBase : ControllerBase
                 return _workspaceId.Value;
             }
 
-            var workspaceIdHeaderValue = HttpContext.Request.Headers[ApiConstants.WorkspaceHeaderKey];
-
-            _workspaceId = Guid.TryParse(workspaceIdHeaderValue, out var workspaceId)
-                ? workspaceId
-                : Guid.Empty;
+            _workspaceId = HttpContext.Request.WorkspaceId();
             return _workspaceId.Value;
         }
+    }
+
+    protected Task<PolicyStatement[]> GetRequestPermissionsAsync()
+    {
+        var requestPermissions = HttpContext.RequestServices.GetRequiredService<IRequestPermissions>();
+
+        return requestPermissions.GetAsync(HttpContext);
     }
 
     protected static ApiResponse<TData> Ok<TData>(TData data) => ApiResponse<TData>.Ok(data);

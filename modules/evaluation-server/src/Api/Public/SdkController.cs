@@ -1,27 +1,22 @@
+using Api.Authorization;
+using Microsoft.AspNetCore.Authorization;
+using Api.RateLimiting;
 using Domain.EndUsers;
-using Streaming.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
+using Streaming.Services;
 
 namespace Api.Public;
 
-public class SdkController : PublicApiControllerBase
+[Route("api/public/sdk")]
+[EnableRateLimiting(RateLimitingPolicies.Sdk)]
+public class SdkController(IDataSyncService dataSyncService) : ApiControllerBase
 {
-    private readonly IDataSyncService _dataSyncService;
-
-    public SdkController(IDataSyncService dataSyncService)
-    {
-        _dataSyncService = dataSyncService;
-    }
-
     [HttpGet("server/latest-all")]
+    [Authorize(SecretPolicies.ServerOnly)]
     public async Task<IActionResult> GetServerSideSdkPayloadAsync([FromQuery] long timestamp = 0)
     {
-        if (!Authenticated)
-        {
-            return Unauthorized();
-        }
-
-        var payload = await _dataSyncService.GetServerSdkPayloadAsync(EnvId, timestamp);
+        var payload = await dataSyncService.GetServerSdkPayloadAsync(EnvId, timestamp);
         if (payload.IsEmpty())
         {
             return Ok();
@@ -37,19 +32,15 @@ public class SdkController : PublicApiControllerBase
     }
 
     [HttpPost("client/latest-all")]
+    [Authorize(SecretPolicies.ClientOnly)]
     public async Task<IActionResult> GetClientSdkPayloadAsync(EndUser endUser, [FromQuery] long timestamp = 0)
     {
-        if (!Authenticated)
-        {
-            return Unauthorized();
-        }
-
         if (!endUser.IsValid())
         {
             return BadRequest("invalid end user");
         }
 
-        var payload = await _dataSyncService.GetClientSdkPayloadAsync(EnvId, endUser, timestamp);
+        var payload = await dataSyncService.GetClientSdkPayloadAsync(EnvId, endUser, timestamp);
         if (payload.IsEmpty())
         {
             return Ok();

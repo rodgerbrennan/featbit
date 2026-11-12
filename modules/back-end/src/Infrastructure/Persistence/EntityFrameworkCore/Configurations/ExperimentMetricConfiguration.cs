@@ -1,4 +1,4 @@
-﻿using Domain.ExperimentMetrics;
+using Domain.Experiments;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -10,16 +10,14 @@ public class ExperimentMetricConfiguration : IEntityTypeConfiguration<Experiment
     {
         builder.ToTable("experiment_metrics");
 
-        builder.HasIndex(x => x.EnvId);
+        builder.HasIndex(x => new { x.EnvId, x.Key }).IsUnique();
 
-        builder.Property(x => x.Name).HasMaxLength(128).IsRequired();
-        builder.Property(x => x.EventName).HasMaxLength(128).IsRequired();
-        builder.Property(x => x.EventType).IsRequired();
-        builder.Property(x => x.CustomEventTrackOption).IsRequired();
-        builder.Property(x => x.CustomEventUnit).HasMaxLength(128);
-        builder.Property(x => x.CustomEventSuccessCriteria).IsRequired();
-        builder.Property(x => x.IsArvhived).IsRequired();
-
-        builder.Property(x => x.TargetUrls).HasColumnType("jsonb");
+        builder.Property(x => x.EnvId).HasColumnName("env_id");
+        builder.Property(x => x.Name).HasMaxLength(256).IsRequired();
+        builder.Property(x => x.Key).HasMaxLength(128).IsRequired();
+        builder.Property(x => x.EventName).HasColumnName("event_name").HasMaxLength(256).IsRequired();
+        builder.Property(x => x.MetricType).HasColumnName("metric_type").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.MetricAgg).HasColumnName("metric_agg").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.Status).HasMaxLength(64).IsRequired();
     }
 }

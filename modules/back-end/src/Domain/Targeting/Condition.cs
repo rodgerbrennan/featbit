@@ -5,12 +5,24 @@ namespace Domain.Targeting;
 
 public class Condition
 {
+    /// <summary>
+    /// The condition ID. Usually a UUID.
+    /// </summary>
     public string Id { get; set; }
 
+    /// <summary>
+    /// The property to evaluate.
+    /// </summary>
     public string Property { get; set; }
 
+    /// <summary>
+    /// The operator to use for evaluation.
+    /// </summary>
     public string Op { get; set; }
 
+    /// <summary>
+    /// The value to compare against.
+    /// </summary>
     public string Value { get; set; }
 
     public bool IsSegmentCondition()
@@ -26,6 +38,17 @@ public class Condition
 
         var theOperator = Operator.Get(Op);
         return theOperator.IsMatch(userValue, Value);
+    }
+
+    public bool IsMultiValue()
+    {
+        if (IsSegmentCondition())
+        {
+            return true;
+        }
+
+        string[] multiOps = [OperatorTypes.IsOneOf, OperatorTypes.NotOneOf];
+        return multiOps.Contains(Op);
     }
 
     public void Assign(Condition source)
@@ -47,5 +70,28 @@ public class Condition
                condition.Property == Property &&
                condition.Op == Op &&
                condition.Value == Value;
+    }
+
+    public bool IsValid(bool isSegmentConditionAllowed)
+    {
+        // missing property
+        if (string.IsNullOrWhiteSpace(Property))
+        {
+            return false;
+        }
+
+        var isSegmentCondition = IsSegmentCondition();
+
+        // segment condition is not allowed in some contexts, e.g., in segment targeting rules
+        if (isSegmentCondition && !isSegmentConditionAllowed)
+        {
+            return false;
+        }
+
+        // for segment conditions, the value must be a valid JSON array of strings;
+        // for non-segment conditions, the value must be valid according to the operator
+        return isSegmentCondition
+            ? OpValueValidator.IsStringArray(Value)
+            : OpValueValidator.IsValid(Op, Value);
     }
 }

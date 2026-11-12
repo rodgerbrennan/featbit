@@ -29,7 +29,6 @@ services:
     depends_on:
       - mongodb
       - redis
-      - da-server
     expose:
       - 5000
     networks:
@@ -49,28 +48,6 @@ services:
     networks:
       - featbit-network
 
-  da-server:
-    image: featbit/data-analytics-server:dev
-    container_name: da-server
-    build:
-      context: ./modules/data-analytics
-      dockerfile: ./Dockerfile
-    depends_on:
-      - mongodb
-      - redis
-    expose:
-      - 80
-    networks:
-      - featbit-network
-    environment:
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      REDIS_DB: 0
-      MONGO_URI: mongodb://admin:password@mongodb:27017
-      MONGO_INITDB_DATABASE: featbit
-      MONGO_HOST: mongodb
-      CHECK_DB_LIVNESS: false
-
   demo-dino-game-vue:
     image: featbit/demo-dino-game-vue:latest
     container_name: demo-dino-game-vue
@@ -83,7 +60,7 @@ services:
       - VIRTUAL_PORT=5173
 
   mongodb:
-    image: mongo:5.0.14
+    image: mongo:5.0.32
     container_name: mongodb
     ports:
       - "27017:27017"
@@ -98,7 +75,7 @@ services:
       - featbit-network
 
   redis:
-    image: bitnami/redis:6.2.10
+    image: bitnamilegacy/redis:6.2.10
     container_name: redis
     environment:
       - ALLOW_EMPTY_PASSWORD=yes

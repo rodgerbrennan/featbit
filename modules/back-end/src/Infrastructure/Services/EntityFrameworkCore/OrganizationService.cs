@@ -1,14 +1,13 @@
 using Domain.Groups;
 using Domain.Members;
 using Domain.Organizations;
-using Domain.Policies;
 using Domain.Projects;
 using Microsoft.EntityFrameworkCore;
 using Environment = Domain.Environments.Environment;
 
 namespace Infrastructure.Services.EntityFrameworkCore;
 
-public class OrganizationService(AppDbContext dbContext, IProjectService projectService)
+public class OrganizationService(AppDbContext dbContext)
     : EntityFrameworkCoreService<Organization>(dbContext), IOrganizationService
 {
     public async Task<string[]> GetScopesAsync(ScopeString[] scopeStrings)
@@ -30,7 +29,7 @@ public class OrganizationService(AppDbContext dbContext, IProjectService project
         return aggregation.ToArray();
     }
 
-    public async Task<ICollection<Organization>> GetListAsync(Guid userId)
+    public async Task<ICollection<Organization>> GetUserOrganizationsAsync(Guid workspaceId, Guid userId)
     {
         var organizations = QueryableOf<Organization>();
         var users = QueryableOf<OrganizationUser>();
@@ -39,7 +38,7 @@ public class OrganizationService(AppDbContext dbContext, IProjectService project
             from organization in organizations
             join user in users
                 on organization.Id equals user.OrganizationId
-            where user.UserId == userId
+            where user.UserId == userId && organization.WorkspaceId == workspaceId
             select organization;
 
         return await query.ToListAsync();
@@ -53,6 +52,15 @@ public class OrganizationService(AppDbContext dbContext, IProjectService project
         );
     }
 
+    public async Task<bool> ContainsUserAsync(Guid organizationId, Guid userId)
+    {
+        var exists = await QueryableOf<OrganizationUser>().AnyAsync(
+            x => x.OrganizationId == organizationId && x.UserId == userId
+        );
+
+        return exists;
+    }
+
     public async Task AddUserAsync(
         OrganizationUser organizationUser,
         ICollection<Guid>? policies,
@@ -61,11 +69,9 @@ public class OrganizationService(AppDbContext dbContext, IProjectService project
         var organizationId = organizationUser.OrganizationId;
         var userId = organizationUser.UserId;
 
-        // if organization user already exists
-        var existingUser = await QueryableOf<OrganizationUser>().FirstOrDefaultAsync(
-            x => x.OrganizationId == organizationId && x.UserId == userId
-        );
-        if (existingUser != null)
+        // if user is already in organization, do nothing
+        var exists = await ContainsUserAsync(organizationId, userId);
+        if (exists)
         {
             return;
         }
@@ -94,45 +100,5 @@ public class OrganizationService(AppDbContext dbContext, IProjectService project
         }
 
         await SaveChangesAsync();
-    }
-
-    public async Task RemoveUserAsync(Guid organizationId, Guid userId)
-    {
-        // delete organization user
-        await SetOf<OrganizationUser>()
-            .Where(x => x.OrganizationId == organizationId && x.UserId == userId)
-            .ExecuteDeleteAsync();
-
-        // delete member policies
-        await SetOf<MemberPolicy>()
-            .Where(x => x.OrganizationId == organizationId && x.MemberId == userId)
-            .ExecuteDeleteAsync();
-
-        // delete member groups
-        await SetOf<GroupMember>()
-            .Where(x => x.OrganizationId == organizationId && x.MemberId == userId)
-            .ExecuteDeleteAsync();
-    }
-
-    public async Task DeleteAsync(Guid id)
-    {
-        // delete organization
-        await DeleteOneAsync(id);
-
-        // delete organization user
-        await SetOf<OrganizationUser>().Where(x => x.OrganizationId == id).ExecuteDeleteAsync();
-
-        // delete organization policies & groups
-        await SetOf<Policy>().Where(x => x.OrganizationId == id).ExecuteDeleteAsync();
-        await SetOf<MemberPolicy>().Where(x => x.OrganizationId == id).ExecuteDeleteAsync();
-        await SetOf<Group>().Where(x => x.OrganizationId == id).ExecuteDeleteAsync();
-        await SetOf<GroupMember>().Where(x => x.OrganizationId == id).ExecuteDeleteAsync();
-
-        // delete projects
-        var projectIds = await QueryableOf<Project>()
-            .Where(x => x.OrganizationId == id)
-            .Select(x => x.Id)
-            .ToListAsync();
-        await projectService.DeleteManyAsync(projectIds);
     }
 }

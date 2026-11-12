@@ -1,7 +1,9 @@
 ﻿using Application.Resources;
+using Domain.FeatureFlags;
 using Domain.Organizations;
 using Domain.Projects;
 using Domain.Resources;
+using Domain.Segments;
 using Microsoft.EntityFrameworkCore;
 using Environment = Domain.Environments.Environment;
 
@@ -27,11 +29,118 @@ public class ResourceService(AppDbContext dbContext) : IResourceService
             ResourceTypes.Segment => [Resource.AllSegments],
             ResourceTypes.Env => await GetEnvsAsync(organizationId, name),
             ResourceTypes.Project => await GetProjectsAsync(organizationId, name),
-            _ => Array.Empty<Resource>()
+            _ => []
         };
     }
 
-    public async Task<IEnumerable<Resource>> GetProjectsAsync(Guid organizationId, string name)
+    public async Task<string?> GetProjectRnAsync(Guid projectId)
+    {
+        var key = await QueryableOf<Project>()
+            .Where(x => x.Id == projectId)
+            .Select(x => x.Key)
+            .FirstOrDefaultAsync();
+
+        return key == null ? null : RN.ForProject(key);
+    }
+
+    public async Task<string?> GetEnvRnAsync(Guid envId)
+    {
+        var query =
+            from env in QueryableOf<Environment>()
+            join project in QueryableOf<Project>() on env.ProjectId equals project.Id
+            where env.Id == envId
+            select new
+            {
+                projectKey = project.Key,
+                envKey = env.Key
+            };
+
+        var data = await query.FirstOrDefaultAsync();
+        return data == null ? null : RN.ForEnv(data.projectKey, data.envKey);
+    }
+
+    public async Task<string?> GetFlagRnAsync(Guid envId, string key)
+    {
+        var query =
+            from project in QueryableOf<Project>()
+            join env in QueryableOf<Environment>() on project.Id equals env.ProjectId
+            join flag in QueryableOf<FeatureFlag>() on env.Id equals flag.EnvId
+            where flag.EnvId == envId && flag.Key == key
+            select new
+            {
+                projectKey = project.Key,
+                envKey = env.Key,
+                flagKey = flag.Key,
+                flagTags = flag.Tags
+            };
+
+        var data = await query.FirstOrDefaultAsync();
+        return data == null ? null : RN.ForFlag(data.projectKey, data.envKey, data.flagKey, data.flagTags);
+    }
+
+    public async Task<string?> GetSegmentRnAsync(Guid envId, Guid id)
+    {
+        var segment = await QueryableOf<Segment>().FirstOrDefaultAsync(x => x.Id == id);
+        if (segment == null)
+        {
+            return null;
+        }
+
+        switch (segment.Type)
+        {
+            case SegmentType.EnvironmentSpecific when segment.EnvId == envId:
+            {
+                var query =
+                    from project in QueryableOf<Project>()
+                    join env in QueryableOf<Environment>() on project.Id equals env.ProjectId
+                    where env.Id == envId
+                    select new
+                    {
+                        ProjectKey = project.Key,
+                        EnvKey = env.Key
+                    };
+
+                var projectEnv = await query.FirstOrDefaultAsync();
+                return projectEnv == null
+                    ? null
+                    : RN.ForSegment(projectEnv.ProjectKey, projectEnv.EnvKey, segment.Key, segment.Tags);
+            }
+
+            case SegmentType.Shared:
+            {
+                var query = from env in QueryableOf<Environment>()
+                    join project in QueryableOf<Project>() on env.ProjectId equals project.Id
+                    join organization in QueryableOf<Organization>() on project.OrganizationId equals organization.Id
+                    where env.Id == envId
+                    select new
+                    {
+                        OrganizationKey = organization.Key,
+                        ProjectKey = project.Key,
+                        EnvKey = env.Key
+                    };
+
+                var projectEnv = await query.FirstOrDefaultAsync();
+                if (projectEnv == null)
+                {
+                    return null;
+                }
+
+                var envScope =
+                    $"organization/{projectEnv.OrganizationKey}:project/{projectEnv.ProjectKey}:env/{projectEnv.EnvKey}";
+                if (segment.Scopes.Any(scope => RN.IsInScope(envScope, scope)))
+                {
+                    return RN.ForSegment(projectEnv.ProjectKey, projectEnv.EnvKey, segment.Key, segment.Tags);
+                }
+
+                return null;
+            }
+
+            default:
+                return null;
+        }
+    }
+
+    private async Task<IEnumerable<Resource>> GetProjectsAsync(Guid organizationId, string name)
     {
         var query = QueryableOf<Project>()
             .Where(project => project.OrganizationId == organizationId)
@@ -39,7 +148,7 @@ public class ResourceService(AppDbContext dbContext) : IResourceService
             {
                 project.Id,
                 project.Name,
-                Rn = "project/" + project.Key
+                project.Key
             });
         if (!string.IsNullOrWhiteSpace(name))
         {
@@ -52,7 +161,7 @@ public class ResourceService(AppDbContext dbContext) : IResourceService
         {
             Id = x.Id,
             Name = x.Name,
-            Rn = x.Rn,
+            Rn = RN.ForProject(x.Key),
             Type = ResourceTypes.Project
         }).ToList();
 
@@ -60,7 +169,7 @@ public class ResourceService(AppDbContext dbContext) : IResourceService
         return resources;
     }
 
-    public async Task<IEnumerable<Resource>> GetEnvsAsync(Guid organizationId, string name)
+    private async Task<IEnumerable<Resource>> GetEnvsAsync(Guid organizationId, string name)
     {
         var organizations = QueryableOf<Organization>();
         var projects = QueryableOf<Project>();
@@ -75,7 +184,8 @@ public class ResourceService(AppDbContext dbContext) : IResourceService
             {
                 env.Id,
                 env.Name,
-                Rn = "project/" + project.Key + ":env/" + env.Key
+                projectKey = project.Key,
+                envKey = env.Key
             };
 
         if (!string.IsNullOrWhiteSpace(name))
@@ -89,7 +199,7 @@ public class ResourceService(AppDbContext dbContext) : IResourceService
         {
             Id = x.Id,
             Name = x.Name,
-            Rn = x.Rn,
+            Rn = RN.ForEnv(x.projectKey, x.envKey),
             Type = ResourceTypes.Env
         }).ToList();
 

@@ -1,3 +1,4 @@
+using Domain.AuditLogs;
 using Application.Bases.Exceptions;
 using Application.Bases.Models;
 using Application.Members;
@@ -13,6 +14,28 @@ namespace Infrastructure.Services.MongoDb;
 
 public class MemberService(MongoDbClient mongoDb) : IMemberService
 {
+    public async Task<MemberAuditSnapshot?> GetAuditSnapshotAsync(Guid id, Guid? organizationId, Guid workspaceId)
+    {
+        var exists = organizationId.HasValue
+            ? await mongoDb.QueryableOf<OrganizationUser>().AnyAsync(x => x.OrganizationId == organizationId && x.UserId == id)
+            : await mongoDb.QueryableOf<WorkspaceUser>().AnyAsync(x => x.WorkspaceId == workspaceId && x.UserId == id);
+        if (!exists) return null;
+        // Project only audit-safe fields; never serialize User or Member credentials.
+        var identity = await mongoDb.QueryableOf<User>().Where(x => x.Id == id)
+            .Select(x => new { x.Id, x.Name, x.Email }).FirstOrDefaultAsync();
+        if (identity == null) return null;
+        var groupIds = await mongoDb.QueryableOf<GroupMember>().Where(x => x.OrganizationId == organizationId && x.MemberId == id)
+            .Select(x => x.GroupId).ToListAsync();
+        var policyIds = await mongoDb.QueryableOf<MemberPolicy>().Where(x => x.OrganizationId == organizationId && x.MemberId == id)
+            .Select(x => x.PolicyId).ToListAsync();
+        var groups = await mongoDb.QueryableOf<Group>().Where(x => groupIds.Contains(x.Id))
+            .Select(x => new IamAuditReference(x.Id, x.Name, "group/" + x.Name)).ToListAsync();
+        var policies = await mongoDb.QueryableOf<Policy>().Where(x => policyIds.Contains(x.Id))
+            .Select(x => new PolicyAuditReference(x.Id, x.Name, "policy/" + x.Key, x.Type)).ToListAsync();
+        return new MemberAuditSnapshot(identity.Id, identity.Name, $"member/{identity.Email}", identity.Email,
+            groups.OrderBy(x => x.Id).ToArray(), policies.OrderBy(x => x.Id).ToArray());
+    }
+
     public async Task<Member> GetAsync(Guid organizationId, Guid memberId)
     {
         var users = mongoDb.QueryableOf<User>();
@@ -28,8 +51,9 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
                 Id = user.Id,
                 Email = user.Email,
                 Name = user.Name,
+                CreatedAt = user.CreatedAt,
                 InvitorId = organizationUser.InvitorId,
-                InitialPassword = organizationUser.InitialPassword,
+                InitialPassword = user.InitialPassword
             };
 
         var member = await query.FirstOrDefaultAsync();
@@ -42,6 +66,29 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
         member.Groups = await GetGroupsAsync(organizationId, new[] { member.Id });
 
         return member;
+    }
+
+    public async Task<ICollection<Member>> GetListAsync(Guid organizationId, Guid[] ids)
+    {
+        var users = mongoDb.QueryableOf<User>();
+        var organizationUsers = mongoDb.QueryableOf<OrganizationUser>();
+
+        var query =
+            from user in users
+            join organizationUser in organizationUsers
+                on user.Id equals organizationUser.UserId
+            where organizationUser.OrganizationId == organizationId && ids.Contains(user.Id)
+            select new Member
+            {
+                Id = user.Id,
+                Email = user.Email,
+                Name = user.Name,
+                CreatedAt = user.CreatedAt,
+                InvitorId = organizationUser.InvitorId,
+                InitialPassword = user.InitialPassword
+            };
+
+        return await query.ToListAsync();
     }
 
     public async Task DeleteAsync(Guid organizationId, Guid memberId)
@@ -61,6 +108,21 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
 
     public async Task<PagedResult<Member>> GetListAsync(Guid organizationId, MemberFilter filter)
     {
+        var members = await GetLookupListAsync(organizationId, filter);
+
+        // get member groups
+        var memberIds = members.Items.Select(x => x.Id);
+        var groups = await GetGroupsAsync(organizationId, memberIds);
+        foreach (var member in members.Items)
+        {
+            member.Groups = groups.Where(x => x.MemberId == member.Id);
+        }
+
+        return members;
+    }
+
+    public async Task<PagedResult<Member>> GetLookupListAsync(Guid organizationId, MemberFilter filter)
+    {
         var users = mongoDb.QueryableOf<User>();
         var organizationUsers = mongoDb.QueryableOf<OrganizationUser>();
 
@@ -74,8 +136,9 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
                 Id = user.Id,
                 Email = user.Email,
                 Name = user.Name,
+                CreatedAt = user.CreatedAt,
                 InvitorId = organizationUser.InvitorId,
-                InitialPassword = organizationUser.InitialPassword,
+                InitialPassword = user.InitialPassword
             };
 
         // email/name filter
@@ -90,17 +153,10 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
 
         var totalCount = await query.CountAsync();
         var items = await query
+            .OrderByDescending(x => x.CreatedAt)
             .Skip(filter.PageIndex * filter.PageSize)
             .Take(filter.PageSize)
             .ToListAsync();
-
-        // get member groups
-        var memberIds = items.Select(x => x.Id);
-        var groups = await GetGroupsAsync(organizationId, memberIds);
-        foreach (var member in items)
-        {
-            member.Groups = groups.Where(x => x.MemberId == member.Id);
-        }
 
         return new PagedResult<Member>(totalCount, items);
     }
@@ -148,6 +204,7 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
                 theGroup.Id,
                 theGroup.Name,
                 theGroup.Description,
+                theGroup.CreatedAt,
                 GroupMembers = allGroupMembers
             };
 
@@ -164,6 +221,7 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
 
         var totalCount = await query.CountAsync();
         var items = await query
+            .OrderByDescending(x => x.CreatedAt)
             .Skip(filter.PageIndex * filter.PageSize)
             .Take(filter.PageSize)
             .ToListAsync();
@@ -182,7 +240,17 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
 
     public async Task<IEnumerable<Policy>> GetPoliciesAsync(Guid organizationId, Guid memberId)
     {
-        // direct policies
+        var assignments = await GetPermissionAssignmentsAsync(organizationId, memberId);
+
+        return assignments
+            .GroupBy(x => x.Policy.Id)
+            .Select(x => x.First().Policy);
+    }
+
+    public async Task<IReadOnlyCollection<MemberPermissionPolicyAssignment>> GetPermissionAssignmentsAsync(
+        Guid organizationId,
+        Guid memberId)
+    {
         var policies = mongoDb.QueryableOf<Policy>();
         var memberPolicies = mongoDb.QueryableOf<MemberPolicy>();
 
@@ -207,14 +275,46 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
             join policy in policies
                 on groupPolicy.PolicyId equals policy.Id
             where groupMember.OrganizationId == organizationId && groupMember.MemberId == memberId
-            select policy;
+            select new
+            {
+                GroupId = theGroup.Id,
+                GroupName = theGroup.Name,
+                Policy = policy
+            };
 
         var directPolicies = await directPolicyQuery.ToListAsync();
         var inheritedPolicies = await inheritedPolicyQuery.ToListAsync();
 
-        // distinct by policy name
-        var allPolicies = directPolicies.Concat(inheritedPolicies).GroupBy(x => x.Name).Select(x => x.First());
-        return allPolicies;
+        var assignments = directPolicies
+            .Select(policy => new MemberPermissionPolicyAssignment
+            {
+                Policy = policy,
+                Source = new MemberPermissionSourceVm
+                {
+                    AssignmentType = MemberPermissionAssignmentTypes.Direct
+                }
+            })
+            .Concat(inheritedPolicies.Select(x => new MemberPermissionPolicyAssignment
+            {
+                Policy = x.Policy,
+                Source = new MemberPermissionSourceVm
+                {
+                    AssignmentType = MemberPermissionAssignmentTypes.Group,
+                    GroupId = x.GroupId,
+                    GroupName = x.GroupName
+                }
+            }))
+            .ToArray();
+
+        return assignments;
+    }
+
+    public async Task<PolicyStatement[]> GetPermissionsAsync(Guid organizationId, Guid memberId)
+    {
+        var policies = await GetPoliciesAsync(organizationId, memberId);
+
+        var statements = policies.SelectMany(x => x.Statements).ToArray();
+        return statements;
     }
 
     public async Task<PagedResult<MemberPolicyVm>> GetDirectPoliciesAsync(
@@ -237,6 +337,7 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
                 policy.Name,
                 policy.Type,
                 policy.Description,
+                policy.CreatedAt,
                 AllPolicyMembers = allPolicyMembers
             };
 
@@ -256,6 +357,7 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
 
         var totalCount = await query.CountAsync();
         var items = await query
+            .OrderByDescending(x => x.CreatedAt)
             .Skip(filter.PageIndex * filter.PageSize)
             .Take(filter.PageSize)
             .ToListAsync();
@@ -297,6 +399,7 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
                 Name = policy.Name,
                 Description = policy.Description,
                 Type = policy.Type,
+                CreatedAt = policy.CreatedAt,
                 GroupName = theGroup.Name
             };
 
@@ -308,6 +411,7 @@ public class MemberService(MongoDbClient mongoDb) : IMemberService
 
         var totalCount = await query.CountAsync();
         var items = await query
+            .OrderByDescending(x => x.CreatedAt)
             .Skip(filter.PageIndex * filter.PageSize)
             .Take(filter.PageSize)
             .ToListAsync();

@@ -1,0 +1,74 @@
+namespace Domain.Experiments;
+
+public class ExperimentRun : AuditedEntity
+{
+    public Guid ExperimentId { get; set; }
+
+    public string Slug { get; set; }
+
+    public string Method { get; set; }
+
+    public PrimaryMetricConfig PrimaryMetric { get; set; }
+
+    public List<GuardrailMetricConfig> GuardrailMetrics { get; set; } = [];
+
+    public ICollection<Domain.FeatureFlags.Variation> Variations { get; set; } = [];
+
+    public string ControlVariant { get; set; }
+
+    public string[] TreatmentVariants { get; set; } = [];
+
+    public int? MinimumSample { get; set; }
+
+    public DateTime? ObservationStart { get; set; }
+
+    public DateTime? ObservationEnd { get; set; }
+
+    public bool PriorProper { get; set; }
+
+    public double? PriorMean { get; set; }
+
+    public double? PriorStddev { get; set; }
+
+    public string AnalysisResult { get; set; }
+
+    public string Decision { get; set; }
+
+    public string DecisionSummary { get; set; }
+
+    public string DecisionReason { get; set; }
+
+    public string WhatChanged { get; set; }
+
+    public string WhatHappened { get; set; }
+
+    public string ConfirmedOrRefuted { get; set; }
+
+    public string WhyItHappened { get; set; }
+
+    public string NextHypothesis { get; set; }
+
+    public double? TrafficPercent { get; set; } = 100;
+
+    public Guid? LayerId { get; set; }
+
+    public int? TrafficOffset { get; set; } = 0;
+
+    public string LayerKey { get; set; }
+
+    public string AllocationKeySelector { get; set; } = "user.keyId";
+
+    public double? SliceStart { get; set; } = 0;
+
+    public double? SliceEnd { get; set; } = 100;
+
+    public string AllocationPlan { get; set; }
+
+    public string AssignmentUnitSelector { get; set; } = "user.keyId";
+
+    public double? LayerTrafficPercent { get; set; } = 100;
+
+    public string AnalysisSamplingPlan { get; set; }
+
+    public Experiment Experiment { get; set; }
+}

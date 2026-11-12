@@ -1,27 +1,24 @@
-﻿using System.Net.WebSockets;
+using Domain.Secrets;
 using Domain.Shared;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Internal;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Logging.Testing;
 using Moq;
 using Streaming.Connections;
 using Streaming.Services;
-using Streaming.UnitTests.Connections;
 
 namespace Streaming.UnitTests.Messages;
 
 public class RequestValidatorTests
 {
     [Fact]
-    public async Task Valid()
+    public async Task ValidateAsync_ValidClientRequest_ReturnsSecretForEnvironment()
     {
         var context = SetupTestContext();
         var validator = SetupValidator();
 
         var validationResult = await validator.ValidateAsync(context);
 
-        Assert.True(validationResult.IsValid);
+        Assert.Equal(ValidationResultStatus.Valid, validationResult.Status);
         Assert.Empty(validationResult.Reason);
 
         Assert.Single(validationResult.Secrets);
@@ -29,14 +26,14 @@ public class RequestValidatorTests
     }
 
     [Fact]
-    public async Task ValidRelayProxy()
+    public async Task ValidateAsync_ValidRelayProxyRequest_ReturnsAllServerSecretsForProxy()
     {
         var rpService = new Mock<IRelayProxyService>();
 
         Secret[] secrets =
         [
-            new(ConnectionType.Server, "p1", Guid.NewGuid(), "prod"),
-            new(ConnectionType.Server, "p2", Guid.NewGuid(), "prod")
+            new(SecretTypes.Server, "p1", Guid.NewGuid(), "prod"),
+            new(SecretTypes.Server, "p2", Guid.NewGuid(), "prod")
         ];
 
         rpService.Setup(x => x.GetServerSecretsAsync(It.IsAny<string>())).ReturnsAsync(secrets);
@@ -45,7 +42,7 @@ public class RequestValidatorTests
         var validator = SetupValidator(rpService: rpService.Object);
 
         var validationResult = await validator.ValidateAsync(context);
-        Assert.True(validationResult.IsValid);
+        Assert.Equal(ValidationResultStatus.Valid, validationResult.Status);
         Assert.Empty(validationResult.Reason);
 
         Assert.Equal(2, validationResult.Secrets.Length);
@@ -56,81 +53,91 @@ public class RequestValidatorTests
     [Theory]
     [InlineData("")]
     [InlineData("unknown")]
-    public async Task InvalidType(string type)
+    public async Task ValidateAsync_UnknownOrEmptyConnectionType_FailsWithInvalidType(string type)
     {
         await EnsureInvalidAsync(
-            expectedReason: $"Invalid type: {type}",
+            expectedReason: $"Invalid connection type. ct={type}",
             type: type
         );
     }
 
     [Theory]
     [InlineData("unknown")]
-    public async Task InvalidVersion(string version)
+    public async Task ValidateAsync_UnsupportedProtocolVersion_FailsWithInvalidVersion(string version)
     {
         await EnsureInvalidAsync(
-            expectedReason: $"Invalid version: {version}",
+            expectedReason: $"Invalid protocol version. ct={ConnectionType.Client}; v={version}",
             version: version
         );
     }
 
     [Fact]
-    public async Task InvalidWebSocketState()
+    public async Task ValidateAsync_EmptyToken_FailsWithInvalidToken()
     {
-        var abortedWebsocketMock = new Mock<WebSocket>();
-        abortedWebsocketMock.Setup(x => x.State).Returns(WebSocketState.Aborted);
-
         await EnsureInvalidAsync(
-            expectedReason: "Invalid websocket state: Aborted",
-            webSocket: abortedWebsocketMock.Object
+            expectedReason: $"Missing token. ct={ConnectionType.Client}; v={ConnectionVersion.V2}",
+            token: string.Empty
         );
     }
 
     [Fact]
-    public async Task InvalidToken()
+    public async Task ValidateAsync_MalformedToken_FailsWithInvalidToken()
     {
         await EnsureInvalidAsync(
-            expectedReason: "Invalid token: ",
-            token: string.Empty
-        );
-
-        await EnsureInvalidAsync(
-            expectedReason: "Invalid token: 123456",
+            expectedReason: "Invalid token format",
             token: "123456"
         );
+    }
 
-        await EnsureInvalidAsync(
-            expectedReason: $"Token is expired: {TestData.ClientTokenString}",
-            current: TestData.ClientToken.Timestamp + 31 * 1000
-        );
+    [Theory]
+    [InlineData(31000)]
+    [InlineData(-31000)]
+    public async Task ValidateAsync_TokenTimestampOutsideAllowedWindow_ReturnsInvalid(long timeDifferenceMs)
+    {
+        var timestamp = TestData.ClientToken.Timestamp;
+        var current = timestamp + timeDifferenceMs;
 
-        await EnsureInvalidAsync(
-            expectedReason: $"Token is expired: {TestData.ClientTokenString}",
-            current: TestData.ClientToken.Timestamp - 31 * 1000
-        );
+        var tokenTime = DateTimeOffset.FromUnixTimeMilliseconds(timestamp);
+        var serverTime = DateTimeOffset.FromUnixTimeMilliseconds(current);
 
+        var expectedReason = $"Token timestamp out of range. TokenTime={tokenTime:O}({timestamp}); "
+                             + $"ServerTime={serverTime:O}({current}); ServerMinusTokenMs={timeDifferenceMs}; "
+                             + "Configured Streaming:TokenExpirySeconds=30s; "
+                             + $"env={TestData.ClientSecret.EnvId}; ct=client; v=2";
+
+        await EnsureInvalidAsync(expectedReason: expectedReason, current: current);
+    }
+
+    [Fact]
+    public async Task ValidateAsync_SecretNotFoundInStore_FailsWithSecretNotFound()
+    {
         var nullStore = new Mock<IStore>();
         nullStore.Setup(x => x.GetSecretAsync(It.IsAny<string>())).ReturnsAsync(() => null);
-        await EnsureInvalidAsync(
-            expectedReason: $"Secret is not found: {TestData.ClientSecretString}",
-            store: nullStore.Object
-        );
 
         await EnsureInvalidAsync(
-            expectedReason: $"Inconsistent secret used: {ConnectionType.Client}. Request type: {ConnectionType.Server}",
+            expectedReason: "Invalid environment secret",
+            store: nullStore.Object
+        );
+    }
+
+    [Fact]
+    public async Task ValidateAsync_ClientSecretUsedAsServerConnection_FailsWithInconsistentSecret()
+    {
+        await EnsureInvalidAsync(
+            expectedReason: $"Secret type mismatch. st={SecretTypes.Client}; ct={ConnectionType.Server}; v={ConnectionVersion.V2}; env={TestData.ClientSecret.EnvId}",
             type: ConnectionType.Server
         );
     }
 
     [Fact]
-    public async Task InvalidRelayProxyToken()
+    public async Task ValidateAsync_RelayProxyTokenNotInService_FailsWithInvalidRelayProxyToken()
     {
         var rpService = new Mock<IRelayProxyService>();
         rpService.Setup(x => x.GetServerSecretsAsync(It.IsAny<string>()))
             .ReturnsAsync([]);
 
         await EnsureInvalidAsync(
-            expectedReason: "Invalid relay proxy token: rp-xxx",
+            expectedReason: "Relay proxy lookup found no server secrets",
             type: ConnectionType.RelayProxy,
             token: "rp-xxx",
             rpService: rpService.Object
@@ -138,29 +145,27 @@ public class RequestValidatorTests
     }
 
     [Fact]
-    public async Task ValidationErrorThrowsAndLogged()
+    public async Task ValidateAsync_StoreThrowsException_ReturnsUnavailable()
     {
         var errorStoreMock = new Mock<IStore>();
         errorStoreMock.Setup(x => x.GetSecretAsync(It.IsAny<string>()))
             .Throws(new Exception("Test exception"));
 
-        var logger = new FakeLogger<RequestValidator>();
-
         var context = SetupTestContext();
-        var validator = SetupValidator(store: errorStoreMock.Object, logger: logger);
+        var validator = SetupValidator(store: errorStoreMock.Object);
 
-        await Assert.ThrowsAsync<Exception>(() => validator.ValidateAsync(context));
+        var validationResult = await validator.ValidateAsync(context);
 
-        // assert exception is logged
-        var latestLog = logger.LatestRecord;
-        Assert.Equal(LogLevel.Error, latestLog.Level);
-        Assert.Equal($"Exception occurred while validating request: {context.RawQuery}.", latestLog.Message);
-        Assert.NotNull(latestLog.Exception);
+        Assert.Equal(ValidationResultStatus.Unavailable, validationResult.Status);
+        Assert.NotNull(validationResult.Exception);
+        Assert.Equal(
+            $"Secret lookup unavailable. env={TestData.ClientSecret.EnvId}; ct=client; v=2",
+            validationResult.Reason
+        );
     }
 
     private static async Task EnsureInvalidAsync(
         string expectedReason,
-        WebSocket? webSocket = null,
         string? type = null,
         string? version = null,
         string? token = null,
@@ -169,13 +174,15 @@ public class RequestValidatorTests
         StreamingOptions? streamingOptions = null,
         IRelayProxyService? rpService = null)
     {
-        var context = SetupTestContext(webSocket, type, version, token);
+        var context = SetupTestContext(type, version, token);
         var validator = SetupValidator(current, store, streamingOptions, rpService);
 
         var validationResult = await validator.ValidateAsync(context);
 
-        Assert.False(validationResult.IsValid);
+        Assert.Equal(ValidationResultStatus.Invalid, validationResult.Status);
         Assert.Equal(expectedReason, validationResult.Reason);
+        Assert.DoesNotContain(TestData.ClientTokenString, validationResult.Reason);
+        Assert.DoesNotContain(TestData.ClientSecretString, validationResult.Reason);
         Assert.Empty(validationResult.Secrets);
     }
 
@@ -183,40 +190,40 @@ public class RequestValidatorTests
         long? current = null,
         IStore? store = null,
         StreamingOptions? streamingOptions = null,
-        IRelayProxyService? rpService = null,
-        ILogger<RequestValidator>? logger = null)
+        IRelayProxyService? rpService = null)
     {
-        var spMock = new Mock<IServiceProvider>();
-        spMock.Setup(x => x.GetService(typeof(IRelayProxyService))).Returns(rpService);
+        var mockedStore = Mock.Of<IStore>(x =>
+            x.GetSecretAsync(TestData.ClientSecretString) == Task.FromResult(TestData.ClientSecret)
+        );
 
         var validator = new RequestValidator(
             new TestSystemClock(current ?? TestData.ClientToken.Timestamp),
-            store ?? new TestStore(),
             streamingOptions ?? new StreamingOptions(),
-            rpService == null ? null! : spMock.Object,
-            logger ?? NullLogger<RequestValidator>.Instance
+            rpService ?? Mock.Of<IRelayProxyService>(),
+            new SecretCache(store ?? mockedStore)
         );
 
         return validator;
     }
 
-    private static ConnectionContext SetupTestContext(
-        WebSocket? webSocket = null,
+    private static HttpContext SetupTestContext(
         string? type = null,
         string? version = null,
         string? token = null)
     {
-        var openedWebsocketMock = new Mock<WebSocket>();
-        openedWebsocketMock.Setup(x => x.State).Returns(WebSocketState.Open);
+        var httpContext = new DefaultHttpContext
+        {
+            Request =
+            {
+                QueryString = QueryString.Create([
+                    new KeyValuePair<string, string?>("type", type ?? ConnectionType.Client),
+                    new KeyValuePair<string, string?>("version", version ?? ConnectionVersion.V2),
+                    new KeyValuePair<string, string?>("token", token ?? TestData.ClientTokenString)
+                ])
+            }
+        };
 
-        var ctx = new ConnectionContextBuilder()
-            .WithWebSocket(webSocket ?? openedWebsocketMock.Object)
-            .WithType(type ?? ConnectionType.Client)
-            .WithVersion(version ?? ConnectionVersion.V2)
-            .WithToken(token ?? TestData.ClientTokenString)
-            .Build();
-
-        return ctx;
+        return httpContext;
     }
 }
 

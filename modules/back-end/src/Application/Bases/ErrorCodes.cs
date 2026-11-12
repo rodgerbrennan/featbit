@@ -9,10 +9,13 @@ public static class ErrorCodes
 
     // application
     public const string ResourceNotFound = nameof(ResourceNotFound);
-    public const string InvalidJson = nameof(InvalidJson);
+    public const string Conflict = nameof(Conflict);
     public const string NameHasBeenUsed = nameof(NameHasBeenUsed);
     public const string KeyHasBeenUsed = nameof(KeyHasBeenUsed);
-    public const string InconsistentData = nameof(InconsistentData);
+    public const string BusinessRuleViolation = nameof(BusinessRuleViolation);
+
+    // end user
+    public const string EndUserLimitExceeded = nameof(EndUserLimitExceeded);
 
     // identity error codes
     public const string EmailPasswordMismatch = nameof(EmailPasswordMismatch);
@@ -30,18 +33,11 @@ public static class ErrorCodes
     public const string SegmentIsBeingUsed = nameof(SegmentIsBeingUsed);
 
     // feature flag
-    public const string CannotDeleteUnArchivedFeatureFlag = nameof(CannotDeleteUnArchivedFeatureFlag);
+    public const string CannotDeleteUnarchivedFeatureFlag = nameof(CannotDeleteUnarchivedFeatureFlag);
 
     // triggers
     public const string InvalidTriggerToken = nameof(InvalidTriggerToken);
     public const string TriggerTokenNotMatchOrHasExpired = nameof(TriggerTokenNotMatchOrHasExpired);
-
-    // experiment metrics
-    public const string MetricIsBeingUsedByExperiment = nameof(MetricIsBeingUsedByExperiment);
-
-    // relay proxies
-    public const string InvalidRelayProxyScope = nameof(InvalidRelayProxyScope);
-    public const string InvalidRelayProxyAgent = nameof(InvalidRelayProxyAgent);
 
     public static string Required(string parameterName) => $"{parameterName}_is_required";
     public static string Invalid(string parameterName) => $"{parameterName}_is_invalid";

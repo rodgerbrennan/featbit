@@ -1,3 +1,4 @@
+using Application.AuditLogs;
 using Application.Bases;
 using Application.Bases.Exceptions;
 using Application.Users;
@@ -5,8 +6,12 @@ using Domain.AuditLogs;
 
 namespace Application.Segments;
 
-public class ArchiveSegment : IRequest<bool>
+public class ArchiveSegment : ResourceChangeRequest, IRequest<bool>
 {
+    public Guid WorkspaceId { get; set; }
+
+    public Guid OrgId { get; set; }
+
     public Guid EnvId { get; set; }
 
     public Guid Id { get; set; }
@@ -48,7 +53,17 @@ public class ArchiveSegmentHandler : IRequestHandler<ArchiveSegment, bool>
         await _service.UpdateAsync(segment);
 
         // publish on segment archived notification
-        var notification = new OnSegmentChange(segment, Operations.Archive, dataChange, _currentUser.Id);
+
+        var notification = new OnSegmentChange(
+            segment,
+            request.WorkspaceId,
+            request.OrgId,
+            Operations.Archive,
+            dataChange,
+            _currentUser.Id,
+            comment: request.Comment,
+            isTargetingChange: false
+        );
         await _publisher.Publish(notification, cancellationToken);
 
         return true;

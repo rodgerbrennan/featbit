@@ -1,0 +1,90 @@
+import { useTranslation } from "react-i18next"
+import {
+  FlagChangeBadgeLabel,
+  FlagDefaultChangeContent,
+  FlagRuleChangeContent,
+  FlagRuleChangeLabel,
+  FlagServeValue,
+} from "./flag-rule-change-content"
+import type { FlagTargetingReviewChange } from "./targeting-utils"
+
+export function useFlagChangeLedgerAdapter(
+  segmentNames?: ReadonlyMap<string, string>,
+  snapshot = false,
+  history = false
+) {
+  const { t } = useTranslation()
+  return {
+    copy: {
+      label: (change: FlagTargetingReviewChange) =>
+        change.kind === "order"
+          ? t("featureFlags.detailsPage.review.ruleOrder")
+          : change.label,
+      action: (action: NonNullable<FlagTargetingReviewChange["action"]>) =>
+        t(`featureFlags.detailsPage.review.${action}`),
+      actionCount: (
+        action: Extract<
+          NonNullable<FlagTargetingReviewChange["action"]>,
+          "added" | "removed"
+        >,
+        count: number
+      ) =>
+        t("featureFlags.detailsPage.review.actionCount", {
+          action: t(`featureFlags.detailsPage.review.${action}`),
+          count,
+        }),
+      showMore: (count: number) =>
+        t("featureFlags.detailsPage.review.showMore", { count }),
+      showLess: t("featureFlags.detailsPage.review.showLess"),
+    },
+    renderLabel: (change: FlagTargetingReviewChange) => {
+      if (change.kind === "rule") {
+        return <FlagRuleChangeLabel name={change.label} />
+      }
+      if (change.kind === "targeting") {
+        return (
+          <FlagChangeBadgeLabel
+            badge={t("featureFlags.detailsPage.review.user")}
+            name={change.label}
+          />
+        )
+      }
+      if (change.kind === "default") {
+        if (snapshot) return <span>{change.label}</span>
+        return (
+          <FlagChangeBadgeLabel
+            badge={t("featureFlags.detailsPage.review.default")}
+            name={change.label}
+          />
+        )
+      }
+      return undefined
+    },
+    renderContent: (change: FlagTargetingReviewChange) => {
+      if (change.kind === "rule") {
+        return (
+          <FlagRuleChangeContent
+            snapshot={snapshot || history}
+            previousRule={change.previousRule}
+            currentRule={change.currentRule}
+            previousServing={change.previousServing}
+            currentServing={change.currentServing}
+            segmentNames={segmentNames}
+          />
+        )
+      }
+      if (change.kind === "default") {
+        if (snapshot)
+          return <FlagServeValue value={change.currentServing} snapshot />
+        return (
+          <FlagDefaultChangeContent
+            history={history}
+            previous={change.previousServing}
+            current={change.currentServing}
+          />
+        )
+      }
+      return undefined
+    },
+  }
+}

@@ -1,4 +1,4 @@
-﻿namespace Domain.SemanticPatch;
+namespace Domain.SemanticPatch;
 
 public static class FlagInstructionKind
 {
@@ -28,10 +28,12 @@ public static class FlagInstructionKind
 
     public const string UpdateDisabledVariation = nameof(UpdateDisabledVariation);
 
+    public const string UpdateInsightsEnabled = nameof(UpdateInsightsEnabled);
+
     public const string UpdateDefaultRuleVariationOrRollouts = nameof(UpdateDefaultRuleVariationOrRollouts);
 
     public const string UpdateDefaultRuleDispatchKey = nameof(UpdateDefaultRuleDispatchKey);
-    
+
     public const string AddTargetUsers = nameof(AddTargetUsers);
 
     public const string RemoveTargetUsers = nameof(RemoveTargetUsers);
@@ -43,6 +45,8 @@ public static class FlagInstructionKind
     public const string RemoveRule = nameof(RemoveRule);
 
     public const string SetRules = nameof(SetRules);
+
+    public const string ReorderRules = nameof(ReorderRules);
 
     public const string UpdateRuleName = nameof(UpdateRuleName);
 
@@ -61,9 +65,46 @@ public static class FlagInstructionKind
     public const string UpdateRuleVariationOrRollouts = nameof(UpdateRuleVariationOrRollouts);
 
     public const string Noop = nameof(Noop);
+    
+    public static readonly string[] UpdateVariationKinds =
+    [
+        UpdateVariationType,
+        AddVariation,
+        RemoveVariation,
+        UpdateVariation
+    ];
+
+    public static readonly string[] UpdateDefaultRuleKinds =
+    [
+        UpdateDefaultRuleVariationOrRollouts,
+        UpdateDefaultRuleDispatchKey
+    ];
+
+    public static readonly string[] UpdateTargetUsersKinds =
+    [
+        AddTargetUsers,
+        RemoveTargetUsers,
+        SetTargetUsers
+    ];
+
+    public static readonly string[] UpdateRuleKinds =
+    [
+        AddRule,
+        RemoveRule,
+        SetRules,
+        ReorderRules,
+        UpdateRuleName,
+        UpdateRuleDispatchKey,
+        AddRuleConditions,
+        RemoveRuleConditions,
+        UpdateRuleCondition,
+        AddValuesToRuleCondition,
+        RemoveValuesFromRuleCondition,
+        UpdateRuleVariationOrRollouts
+    ];
 
     public static readonly string[] All =
-    {
+    [
         TurnFlagOn,
         TurnFlagOff,
         UpdateName,
@@ -77,6 +118,7 @@ public static class FlagInstructionKind
         UpdateVariationType,
         UpdateVariation,
         UpdateDisabledVariation,
+        UpdateInsightsEnabled,
         UpdateDefaultRuleVariationOrRollouts,
         UpdateDefaultRuleDispatchKey,
         AddTargetUsers,
@@ -85,6 +127,7 @@ public static class FlagInstructionKind
         AddRule,
         RemoveRule,
         SetRules,
+        ReorderRules,
         UpdateRuleName,
         UpdateRuleDispatchKey,
         AddRuleConditions,
@@ -94,7 +137,7 @@ public static class FlagInstructionKind
         RemoveValuesFromRuleCondition,
         UpdateRuleVariationOrRollouts,
         Noop
-    };
+    ];
 
     public static bool IsDefined(string type)
     {

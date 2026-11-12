@@ -1,8 +1,5 @@
-using System.Text.Json;
 using Confluent.Kafka;
-using Domain.EndUsers;
 using Domain.Messages;
-using Domain.Utils;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -14,15 +11,18 @@ public partial class KafkaMessageConsumer : BackgroundService
     private readonly IConsumer<Null, string> _consumer;
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<KafkaMessageConsumer> _logger;
+    private readonly string[] _topics;
 
     public KafkaMessageConsumer(
         ConsumerConfig config,
         IServiceProvider serviceProvider,
-        ILogger<KafkaMessageConsumer> logger)
+        ILogger<KafkaMessageConsumer> logger, 
+        string[] topics)
     {
         _consumer = new ConsumerBuilder<Null, string>(config).Build();
         _serviceProvider = serviceProvider;
         _logger = logger;
+        _topics = topics; 
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -35,8 +35,8 @@ public partial class KafkaMessageConsumer : BackgroundService
 
     private async Task StartConsumerLoop(CancellationToken cancellationToken)
     {
-        _consumer.Subscribe(Topics.EndUser);
-        _logger.LogInformation("Start consuming {Topic} messages...", Topics.EndUser);
+        _consumer.Subscribe(_topics);
+        _logger.LogInformation("Start consuming messages for {Topics}...", string.Join(", ", _topics));
 
         ConsumeResult<Null, string>? consumeResult = null;
         var message = string.Empty;
@@ -56,20 +56,22 @@ public partial class KafkaMessageConsumer : BackgroundService
                     continue;
                 }
 
-                var endUserMessage =
-                    JsonSerializer.Deserialize<EndUserMessage>(message, ReusableJsonSerializerOptions.Web);
-                if (endUserMessage == null)
+                var topic = consumeResult.Topic;
+                if (string.IsNullOrWhiteSpace(topic))
                 {
                     continue;
                 }
 
                 using var scope = _serviceProvider.CreateScope();
-                var endUserService = scope.ServiceProvider.GetRequiredService<IEndUserService>();
 
-                // upsert endUser and it's properties
-                var endUser = endUserMessage.AsEndUser();
-                await endUserService.UpsertAsync(endUser);
-                await endUserService.AddNewPropertiesAsync(endUser);
+                var handler = scope.ServiceProvider.GetKeyedService<IMessageHandler>(consumeResult.Topic);
+                if (handler == null)
+                {
+                    Log.NoHandlerForTopic(_logger, consumeResult.Topic);
+                    continue;
+                }
+
+                await handler.HandleAsync(message);
             }
             catch (ConsumeException ex)
             {

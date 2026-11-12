@@ -1,0 +1,81 @@
+using Application.Bases;
+
+namespace Application.Experiments;
+
+public class ExperimentUpdate
+{
+    public string Name { get; set; }
+
+    public string Description { get; set; }
+
+    public string Stage { get; set; }
+
+    public Guid? FlagId { get; set; }
+
+    public string Hypothesis { get; set; }
+
+    public string Change { get; set; }
+
+    public string Constraints { get; set; }
+
+    public string Goal { get; set; }
+
+    public string Intent { get; set; }
+
+    public string LastAction { get; set; }
+
+    public string LastLearning { get; set; }
+
+    public string ConflictAnalysis { get; set; }
+}
+
+public class UpdateExperiment : IRequest<ExperimentDetailVm>
+{
+    public Guid EnvId { get; set; }
+
+    public Guid Id { get; set; }
+
+    public ExperimentUpdate Update { get; set; }
+}
+
+public class UpdateExperimentValidator : AbstractValidator<UpdateExperiment>
+{
+    public UpdateExperimentValidator()
+    {
+        RuleFor(x => x.Update)
+            .NotNull().WithErrorCode(ErrorCodes.Required("update"));
+    }
+}
+
+public class UpdateExperimentHandler(
+    IExperimentService service)
+    : IRequestHandler<UpdateExperiment, ExperimentDetailVm>
+{
+    public async Task<ExperimentDetailVm> Handle(
+        UpdateExperiment request,
+        CancellationToken cancellationToken)
+    {
+        return await service.UpdateAsync(request.EnvId, request.Id, request.Update);
+    }
+}
+
+public class UpdateExperimentStage : IRequest<ExperimentDetailVm>
+{
+    public Guid EnvId { get; set; }
+
+    public Guid Id { get; set; }
+
+    public string Stage { get; set; }
+}
+
+public class UpdateExperimentStageHandler(
+    IExperimentService service)
+    : IRequestHandler<UpdateExperimentStage, ExperimentDetailVm>
+{
+    public async Task<ExperimentDetailVm> Handle(
+        UpdateExperimentStage request,
+        CancellationToken cancellationToken)
+    {
+        return await service.UpdateStageAsync(request.EnvId, request.Id, request.Stage);
+    }
+}

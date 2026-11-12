@@ -74,3 +74,88 @@ and [consumer configs](https://kafka.apache.org/documentation/#consumerconfigs) 
 | `Kafka__Consumer__enable.auto.commit`       | Enables auto commit of offset                                                       | `true`         |
 | `Kafka__Consumer__auto.commit.interval.ms`  | The frequency in ms that the consumer offsets are auto-committed to Kafka           | `"5000"`       |
 | `Kafka__Consumer__enable.auto.offset.store` | Whether to automatically store the offset of the last message prior to calling poll | `false`        |
+
+## Streaming
+
+| Name                             | Description                                                  | Default Value |
+|----------------------------------|--------------------------------------------------------------|---------------|
+| `Streaming__TrackClientHostName` | Whether to resolve client's IP hostname for detailed logging | `false`       |
+| `Streaming__TokenExpirySeconds`  | Streaming token expiry time in seconds                       | `30`          |
+
+## CORS
+
+[CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS) **is enabled by default** with wildcard settings,
+allowing requests from any origin, any header, and any method.
+
+| Name                     | Description                                                                                            | Default Value |
+|--------------------------|--------------------------------------------------------------------------------------------------------|---------------|
+| `Cors__Enabled`          | Whether CORS is enabled                                                                                | `true`        |
+| `Cors__AllowedOrigins`   | Allowed origins. Use `*` for wildcard or specify explicit origins using `';'` as the delimiter         | `"*"`         |
+| `Cors__AllowedHeaders`   | Allowed request headers. Use `*` for wildcard or specify explicit headers using `';'` as the delimiter | `"*"`         |
+| `Cors__AllowedMethods`   | Allowed HTTP methods. Use `*` for wildcard or specify explicit methods using `';'` as the delimiter    | `"*"`         |
+| `Cors__AllowCredentials` | Whether to allow credentials. Cannot be used with a wildcard `*` origin                                | `false`       |
+
+## Rate Limiting
+
+Rate limiting **is disabled by default**. When enabled, it protects the API from excessive traffic using one of three
+algorithms: **FixedWindow**, **SlidingWindow**, or **TokenBucket**. Limits can be configured globally and overridden
+per endpoint.
+
+Limits are enforced **per environment**: each environment gets its own independent rate limit bucket,
+so traffic from one environment does not consume another environment's quota.
+
+> [!IMPORTANT]
+> Before enabling rate limiting in production, be sure to have a clear understanding of your traffic patterns and load
+> test your configuration to ensure limits are appropriate and effective.
+
+### Global Options
+
+| Name                                       | Description                                                                                                        | Default Value   |
+|--------------------------------------------|--------------------------------------------------------------------------------------------------------------------|-----------------|
+| `RateLimiting__Enabled`                    | Whether rate limiting is enabled                                                                                   | `false`         |
+| `RateLimiting__Distributed`                | Use Redis for distributed rate limiting across multiple instances. Requires `CacheProvider` to be set to `"Redis"` | `false`         |
+| `RateLimiting__Type`                       | Rate limiter algorithm: `FixedWindow`, `SlidingWindow`, or `TokenBucket`                                           | `"FixedWindow"` |
+| `RateLimiting__QueueLimit`                 | Maximum number of requests queued when the limit is reached. Only used when `RateLimiting__Distributed` is `false` | `0`             |
+| `RateLimiting__PermitLimit`                | Maximum number of requests allowed in the time window. Used by `FixedWindow` and `SlidingWindow`                   | `100`           |
+| `RateLimiting__WindowSeconds`              | Length of the time window in seconds (1–86400). Used by `FixedWindow` and `SlidingWindow`                          | `60`            |
+| `RateLimiting__SegmentsPerWindow`          | Number of segments the window is divided into. Only used by `SlidingWindow`                                        | `4`             |
+| `RateLimiting__TokenLimit`                 | Maximum number of tokens in the bucket. Only used by `TokenBucket`                                                 | `100`           |
+| `RateLimiting__TokensPerPeriod`            | Number of tokens added per replenishment period. Only used by `TokenBucket`                                        | `50`            |
+| `RateLimiting__ReplenishmentPeriodSeconds` | Time between token replenishments in seconds (1–86400). Only used by `TokenBucket`                                 | `60`            |
+
+### Per-Endpoint Overrides
+
+The following endpoint keys are supported. Each key maps to the routes listed below:
+
+| Key           | Routes                                                                                | Description                                                                  |
+|---------------|---------------------------------------------------------------------------------------|------------------------------------------------------------------------------|
+| `Sdk`         | `GET /api/public/sdk/server/latest-all` <br> `POST /api/public/sdk/client/latest-all` | Used by FeatBit SDKs to fetch the latest feature flags via polling           |
+| `Insight`     | `POST /api/public/insight/track`                                                      | Used by FeatBit SDKs to track flag evaluation results and A/B testing events |
+| `FeatureFlag` | `POST /api/public/featureflag/evaluate`                                               | Used to evaluate feature flag variations for a given user                    |
+| `Agent`       | `POST /api/public/agent/register`                                                     | Used to register relay proxy agents                                          |
+| `Streaming`   | `GET /streaming`                                                                      | Used by FeatBit SDKs to establish streaming connections                      |
+
+The environment variable pattern is `RateLimiting__Endpoints__<Key>__<Property>`, for example
+`RateLimiting__Endpoints__Sdk__PermitLimit` overrides `PermitLimit` for the `Sdk` endpoint.
+
+Notes:
+- Any property not specified for an endpoint key inherits from the global defaults above. 
+- All per-endpoint properties are optional and omit any property to fall back to the global value.
+
+## Control-Plane Integration (Cross-DC Consistency)
+
+When a control plane is deployed, the evaluation server participates in the cross-DC consistency
+machinery (see [`modules/control-plane/README.md`](../control-plane/README.md) and the
+[operator guide](../../e2e/control-plane/00-Docs/GATED-COMMIT-CONSISTENCY.md)):
+
+| Key | Default | Purpose |
+|---|---|---|
+| `ControlPlane__Enabled` | `false` | Enables heartbeat publishing to the control plane |
+| `ControlPlane__DcId` | *(unset)* | This DC's identity — **must equal** the control plane's `Redis:Instances[].DcId` for this DC; the join key for commit gating, eviction, and recovery |
+| `ControlPlane__ConsistencyMode` | `BestEffort` | Under `GatedCommit`, flag/segment reads are pointer-gated: only versions the control plane has committed for this DC are served |
+| `ControlPlane__HeartbeatIntervalSeconds` | `5` | Heartbeat cadence; keep ≤ the control plane's `LeaseTtlSeconds`/3 (15s default) or this DC's lease flaps |
+| `ControlPlane__HeartbeatStalenessThresholdSeconds` | `15` | Under `GatedCommit`, `/health/readiness` returns 503 once heartbeats have not been published for this long (the pod leaves rotation rather than serving stale-but-consistent values); liveness is unaffected |
+
+Heartbeats also carry a per-environment **applied watermark** (the newest committed flag/segment
+this DC serves, read from the local Redis indexes), which the control plane exposes as a per-DC
+lag metric.

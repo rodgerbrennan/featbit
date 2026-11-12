@@ -6,22 +6,31 @@ namespace Application.FeatureFlags;
 
 public class OnFeatureFlagDeleted : INotification
 {
+    public Guid WorkspaceId { get; }
+
+    public Guid OrganizationId { get; }
+
     public FeatureFlag Flag { get; set; }
 
     public Guid OperatorId { get; set; }
 
     public DataChange DataChange { get; set; }
 
-    public OnFeatureFlagDeleted(FeatureFlag flag, Guid operatorId)
+    public string Comment { get; set; }
+
+    public OnFeatureFlagDeleted(FeatureFlag flag, Guid workspaceId, Guid organizationId, Guid operatorId, string comment = "")
     {
+        WorkspaceId = workspaceId;
+        OrganizationId = organizationId;
         Flag = flag;
         OperatorId = operatorId;
+        Comment = comment;
         DataChange = new DataChange(flag).To(null);
     }
 
     public AuditLog GetAuditLog()
     {
-        var auditLog = AuditLog.For(Flag, Operations.Remove, DataChange, string.Empty, OperatorId);
+        var auditLog = AuditLog.For(Flag, WorkspaceId, OrganizationId, Operations.Remove, DataChange, Comment, OperatorId);
         return auditLog;
     }
 }

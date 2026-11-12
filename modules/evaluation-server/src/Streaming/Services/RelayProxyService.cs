@@ -1,6 +1,6 @@
 using System.Text.Json;
 using Dapper;
-using Domain.Shared;
+using Domain.Secrets;
 using Infrastructure;
 using Infrastructure.Fakes;
 using Infrastructure.Persistence;
@@ -16,14 +16,14 @@ namespace Streaming.Services;
 public class RelayProxyService(IConfiguration configuration, IServiceProvider serviceProvider)
     : IRelayProxyService
 {
-    public async Task<Secret[]> GetServerSecretsAsync(string key)
+    public async Task<SecretWithValue[]> GetSecretsAsync(string key)
     {
         var dbProvider = configuration.GetDbProvider();
 
         var result = dbProvider.Name switch
         {
-            DbProvider.MongoDb => await GetFromMongoDb(),
-            DbProvider.Postgres => await GetFromPostgres(),
+            DbProvider.MongoDb => await MongoDbGetAsync(),
+            DbProvider.Postgres => await PostgresGetAsync(),
             // Fake store is for integration tests
             DbProvider.Fake => FakeStore.GetRpSecrets(key),
             _ => []
@@ -31,7 +31,7 @@ public class RelayProxyService(IConfiguration configuration, IServiceProvider se
 
         return result;
 
-        async Task<Secret[]> GetFromPostgres()
+        async Task<SecretWithValue[]> PostgresGetAsync()
         {
             var dataSource = serviceProvider.GetRequiredService<NpgsqlDataSource>();
 
@@ -56,7 +56,7 @@ public class RelayProxyService(IConfiguration configuration, IServiceProvider se
             var dynamicParameters = new DynamicParameters();
             var query = rp.isAllEnvs ? SearchByOrganization() : SearchByScopes();
 
-            var secrets = await connection.QueryAsync<Secret>(query, dynamicParameters);
+            var secrets = await connection.QueryAsync<SecretWithValue>(query, dynamicParameters);
             return secrets.AsList().ToArray();
 
             string SearchByOrganization()
@@ -65,38 +65,30 @@ public class RelayProxyService(IConfiguration configuration, IServiceProvider se
 
                 return
                     """
-                    select env.id as envId, env.key as envKey, project.key as projectKey, secret ->> 'type' as type
+                    select env.id as envId, env.key as envKey, project.key as projectKey, secret ->> 'type' as type, secret ->> 'value' as value
                     from environments env
                              join projects project on env.project_id = project.id,
                          jsonb_array_elements(env.secrets) as secret
                     where project.organization_id = @OrganizationId
-                      and secret ->> 'type' = 'server'
                     """;
             }
 
             string SearchByScopes()
             {
-                List<Guid> envIds = [];
-
-                using var scopeArray = JsonDocument.Parse(rp.scopes);
-                foreach (var scopeElement in scopeArray.RootElement.EnumerateArray())
-                {
-                    envIds.AddRange(scopeElement.GetProperty("envIds").EnumerateArray().Select(x => x.GetGuid()));
-                }
-
+                var envIds = JsonSerializer.Deserialize<Guid[]>(rp.scopes) ?? [];
                 dynamicParameters.Add("EnvIds", envIds);
 
                 return """
-                       select env.id as envId, env.key as envKey, project.key as projectKey, secret ->> 'type' as type
+                       select env.id as envId, env.key as envKey, project.key as projectKey, secret ->> 'type' as type, secret ->> 'value' as value
                        from environments env
                                 join projects project on env.project_id = project.id,
                              jsonb_array_elements(env.secrets) as secret
-                       where env.id = any(@EnvIds) and secret ->> 'type' = 'server'
+                       where env.id = any(@EnvIds)
                        """;
             }
         }
 
-        async Task<Secret[]> GetFromMongoDb()
+        async Task<SecretWithValue[]> MongoDbGetAsync()
         {
             var mongodb = serviceProvider.GetRequiredService<IMongoDbClient>();
             var db = mongodb.Database;
@@ -127,18 +119,19 @@ public class RelayProxyService(IConfiguration configuration, IServiceProvider se
                 return [];
             }
 
-            var secrets = documents.SelectMany(document =>
+            var secretsWithValue = documents.SelectMany(document =>
             {
                 var envId = document["env"]["id"].AsGuid;
                 var envKey = document["env"]["key"].AsString;
                 var projectKey = document["project"]["key"].AsString;
-                var serverSecrets = document["env"]["secrets"].AsBsonArray
-                    .Where(x => x["type"].AsString == "server");
+                var secrets = document["env"]["secrets"].AsBsonArray;
 
-                return serverSecrets.Select(x => new Secret(x["type"].AsString, projectKey, envId, envKey));
+                return secrets.Select(x =>
+                    new SecretWithValue(x["type"].AsString, projectKey, envId, envKey, x["value"].AsString)
+                );
             });
 
-            return secrets.ToArray();
+            return secretsWithValue.ToArray();
 
             BsonDocument[] SearchByOrganization()
             {
@@ -165,7 +158,9 @@ public class RelayProxyService(IConfiguration configuration, IServiceProvider se
 
             BsonDocument[] SearchByScopes()
             {
-                var envIds = rp.scopes.AsBsonArray.SelectMany(s => s.AsBsonDocument["envIds"].AsBsonArray);
+                var envIds = rp.scopes.AsBsonArray
+                    .Select(x => new BsonBinaryData(Guid.Parse(x.AsString), GuidRepresentation.Standard))
+                    .ToArray();
 
                 return
                 [
@@ -185,6 +180,87 @@ public class RelayProxyService(IConfiguration configuration, IServiceProvider se
                     })
                 ];
             }
+        }
+    }
+
+    public async Task<Secret[]> GetServerSecretsAsync(string key)
+    {
+        var secretsWithValue = await GetSecretsAsync(key);
+
+        var secrets = secretsWithValue
+            .Where(x => x.Type == SecretTypes.Server)
+            .Select(x => x.AsSecret())
+            .ToArray();
+
+        return secrets;
+    }
+
+    public async Task UpdateAgentStatusAsync(string key, string agentId, string status)
+    {
+        var dbProvider = configuration.GetDbProvider();
+
+        switch (dbProvider.Name)
+        {
+            case DbProvider.MongoDb:
+                await UpdateMongoDbAsync();
+                break;
+            case DbProvider.Postgres:
+                await UpdatePostgresAsync();
+                break;
+        }
+
+        return;
+
+        async Task UpdateMongoDbAsync()
+        {
+            var mongodb = serviceProvider.GetRequiredService<IMongoDbClient>();
+            var db = mongodb.Database;
+
+            var filter = Builders<BsonDocument>.Filter.Eq("key", key);
+            var update = Builders<BsonDocument>.Update.Set(
+                "autoAgents.$[agent].status",
+                status
+            );
+            var arrayFilter = new BsonDocumentArrayFilterDefinition<BsonDocument>(
+                new BsonDocument("agent._id", agentId)
+            );
+
+            await db.GetCollection<BsonDocument>("RelayProxies").UpdateOneAsync(
+                filter,
+                update,
+                new UpdateOptions { ArrayFilters = [arrayFilter] }
+            );
+        }
+
+        async Task UpdatePostgresAsync()
+        {
+            var dataSource = serviceProvider.GetRequiredService<NpgsqlDataSource>();
+            await using var connection = await dataSource.OpenConnectionAsync();
+
+            var param = new
+            {
+                Key = key,
+                AgentId = agentId,
+                Status = status
+            };
+
+            await connection.ExecuteAsync(
+                """
+                update relay_proxies
+                set auto_agents = jsonb_set(
+                        auto_agents,
+                        array [(idx - 1)::text, 'status'],
+                        to_jsonb(@Status),
+                        true
+                )
+                from (select idx
+                      from relay_proxies,
+                           jsonb_array_elements(auto_agents) with ordinality as arr(agent, idx)
+                      where key = @Key
+                        and arr.agent ->> 'id' = @AgentId) subq
+                where key = @Key
+                """, param
+            );
         }
     }
 }

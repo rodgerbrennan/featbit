@@ -26,10 +26,6 @@ public partial class PostgresMessageConsumer : BackgroundService
         }
     );
 
-    private static readonly string[] ListeningTopics = [Topics.FeatureFlagChange, Topics.SegmentChange];
-    private static readonly string[] ListeningChannels = ListeningTopics.Select(Topics.ToChannel).ToArray();
-    private static readonly string ListenChannelsSql = string.Join(' ', ListeningChannels.Select(x => $"LISTEN {x};"));
-
     // The interval in seconds to wait before restarting the listen task after connection closed.
     private const int RestartIntervalInSeconds = 5;
 
@@ -65,6 +61,10 @@ public partial class PostgresMessageConsumer : BackgroundService
         order by id;
         """;
 
+    private readonly string[] _listeningTopics;
+    private readonly string[] _listeningChannels;
+    private readonly string _listenChannelsSql;
+
     public PostgresMessageConsumer(
         IConfiguration configuration,
         IEnumerable<IMessageConsumer> handlers,
@@ -77,6 +77,12 @@ public partial class PostgresMessageConsumer : BackgroundService
             ApplicationName = "els_pg_msg_consumer_keep_alived"
         };
         _dataSource = NpgsqlDataSource.Create(builder.ConnectionString);
+
+        _listeningTopics = configuration.UseControlPlane()
+            ? [Topics.FeatureFlagChange, Topics.SegmentChange, Topics.ControlPlaneCommand]
+            : [Topics.FeatureFlagChange, Topics.SegmentChange];
+        _listeningChannels = _listeningTopics.Select(Topics.ToChannel).ToArray();
+        _listenChannelsSql = string.Join(' ', _listeningChannels.Select(x => $"LISTEN {x};"));
 
         _handlers = handlers.ToDictionary(x => Topics.ToChannel(x.Topic), x => x);
         _logger = logger;
@@ -110,8 +116,8 @@ public partial class PostgresMessageConsumer : BackgroundService
 
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(_listenCts.Token, stoppingToken);
 
-                await connection.ExecuteAsync(ListenChannelsSql, cts.Token);
-                Log.StartListening(_logger, string.Join(',', ListeningChannels));
+                await connection.ExecuteAsync(_listenChannelsSql, cts.Token);
+                Log.StartListening(_logger, string.Join(',', _listeningChannels));
 
                 while (!cts.IsCancellationRequested)
                 {
@@ -196,17 +202,25 @@ public partial class PostgresMessageConsumer : BackgroundService
                 return;
             }
 
-            await using var connection = await _dataSource.OpenConnectionAsync(stoppingToken);
-            var payload = await connection.QueryFirstOrDefaultAsync<string>(
-                "select payload from queue_messages where id = @Id", new { Id = messageId }
-            );
-
+            var payload = await GetPayloadAsync();
             if (string.IsNullOrWhiteSpace(payload))
             {
                 return;
             }
 
             await handler.HandleAsync(payload, stoppingToken);
+
+            return;
+
+            // ensure the connection is disposed after the payload is retrieved
+            async Task<string?> GetPayloadAsync()
+            {
+                await using var connection = await _dataSource.OpenConnectionAsync(stoppingToken);
+
+                return await connection.QueryFirstOrDefaultAsync<string>(
+                    "select payload from queue_messages where id = @Id", new { Id = messageId }
+                );
+            }
         }
     }
 
@@ -294,7 +308,7 @@ public partial class PostgresMessageConsumer : BackgroundService
             var missingMessages = await connection.QueryAsync<(long id, string topic)>(
                 FetchMissedMessagesSql, new
                 {
-                    Topics = ListeningTopics,
+                    Topics = _listeningTopics,
                     LastMessageId = _lastMessageId,
                     LastEnqueuedAt = lastEnqueuedAt
                 }

@@ -2,8 +2,6 @@ using Domain.AccessTokens;
 using Domain.Workspaces;
 using Domain.AuditLogs;
 using Domain.EndUsers;
-using Domain.ExperimentMetrics;
-using Domain.Experiments;
 using Domain.FeatureFlags;
 using Domain.FlagChangeRequests;
 using Domain.FlagDrafts;
@@ -11,10 +9,13 @@ using Domain.FlagRevisions;
 using Domain.FlagSchedules;
 using Domain.Groups;
 using Domain.Members;
+using Domain.Mcp;
 using Domain.Organizations;
 using Domain.Policies;
 using Domain.Projects;
+using Domain.RefreshTokens;
 using Domain.RelayProxies;
+using Domain.Experiments;
 using Domain.Segments;
 using Domain.Triggers;
 using Domain.Users;
@@ -22,7 +23,6 @@ using Domain.Webhooks;
 using Microsoft.Extensions.Options;
 using MongoDB.Bson;
 using MongoDB.Driver;
-using MongoDB.Driver.Linq;
 using Environment = Domain.Environments.Environment;
 
 namespace Infrastructure.Persistence.MongoDb;
@@ -31,7 +31,7 @@ public class MongoDbClient
 {
     protected MongoClient MongoClient { get; }
 
-    protected IMongoDatabase Database { get; }
+    public IMongoDatabase Database { get; }
 
     public MongoDbClient(IOptions<MongoDbOptions> options)
     {
@@ -44,8 +44,11 @@ public class MongoDbClient
     private readonly Dictionary<Type, string> _collectionNameMap = new()
     {
         { typeof(User), "Users" },
+        { typeof(RefreshToken), "RefreshTokens" },
 
         { typeof(Workspace), "Workspaces" },
+
+        { typeof(WorkspaceUser), "WorkspaceUsers" },
 
         { typeof(Organization), "Organizations" },
         { typeof(OrganizationUser), "OrganizationUsers" },
@@ -70,9 +73,17 @@ public class MongoDbClient
         { typeof(MemberPolicy), "MemberPolicies" },
 
         { typeof(Experiment), "Experiments" },
+        { typeof(ExperimentRun), "ExperimentRuns" },
+        { typeof(ExperimentLayer), "ExperimentLayers" },
         { typeof(ExperimentMetric), "ExperimentMetrics" },
+        { typeof(ExperimentExposureEvent), "ExperimentExposureEvents" },
+        { typeof(ExperimentMetricEvent), "ExperimentMetricEvents" },
+        { typeof(ExperimentRunAssignment), "ExperimentRunAssignments" },
 
         { typeof(AccessToken), "AccessTokens" },
+        { typeof(McpDeviceAuthorization), "McpDeviceAuthorizations" },
+        { typeof(McpRefreshAuthorization), "McpRefreshAuthorizations" },
+        { typeof(McpAccessTokenSession), "McpAccessTokenSessions" },
         { typeof(RelayProxy), "RelayProxies" },
         { typeof(Webhook), "Webhooks" },
         { typeof(WebhookDelivery), "WebhookDeliveries" }
@@ -104,7 +115,7 @@ public class MongoDbClient
         return collectionName;
     }
 
-    public IMongoQueryable<TEntity> QueryableOf<TEntity>()
+    public IQueryable<TEntity> QueryableOf<TEntity>()
     {
         return CollectionOf<TEntity>().AsQueryable();
     }

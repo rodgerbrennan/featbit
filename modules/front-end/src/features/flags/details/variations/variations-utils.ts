@@ -1,0 +1,149 @@
+import type { ChangeReviewItem } from "@/features/change-review/change-review-types"
+import type {
+  FeatureFlag,
+  FlagVariation,
+  FlagVariationType,
+} from "../../flags-types"
+
+export type VariationReference = {
+  labels: string[]
+  count: number
+}
+
+export type VariationReviewChange = ChangeReviewItem & {
+  kind: "variation" | "variations"
+}
+
+export function stableVariations(variations: FlagVariation[] | undefined) {
+  return JSON.stringify(
+    (variations ?? []).map((variation) => ({
+      ...variation,
+      name: variation.name.trim(),
+    }))
+  )
+}
+
+export function variationValueError(
+  type: FlagVariationType,
+  value: string
+): "required" | "boolean" | "number" | "json" | null {
+  if (!value.trim()) return "required"
+  if (type === "boolean") {
+    return value === "true" || value === "false" ? null : "boolean"
+  }
+  if (type === "number") {
+    return Number.isFinite(Number(value)) ? null : "number"
+  }
+  if (type !== "json") return null
+
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return parsed && typeof parsed === "object" ? null : "json"
+  } catch {
+    return "json"
+  }
+}
+
+export function variationReferences(
+  flag: FeatureFlag,
+  variationId: string,
+  labels: {
+    defaultOff: string
+    defaultOn: string
+    rules: (count: number) => string
+    users: (count: number) => string
+  }
+): VariationReference {
+  const result: string[] = []
+  if (flag.disabledVariationId === variationId) result.push(labels.defaultOff)
+  if (flag.fallthrough?.variations.some((item) => item.id === variationId)) {
+    result.push(labels.defaultOn)
+  }
+  const ruleCount = (flag.rules ?? []).filter((rule) =>
+    rule.variations.some((item) => item.id === variationId)
+  ).length
+  if (ruleCount) result.push(labels.rules(ruleCount))
+  const userCount =
+    flag.targetUsers?.find((item) => item.variationId === variationId)?.keyIds
+      .length ?? 0
+  if (userCount) result.push(labels.users(userCount))
+  return { labels: result, count: result.length }
+}
+
+function readableVariation(variation: FlagVariation) {
+  return `${variation.name.trim()} = ${variation.value}`
+}
+
+export function variationReviewChanges(
+  previous: FlagVariation[],
+  current: FlagVariation[]
+): VariationReviewChange[] {
+  const changes: VariationReviewChange[] = []
+  const previousById = new Map(previous.map((item) => [item.id, item]))
+  const currentById = new Map(current.map((item) => [item.id, item]))
+
+  const summary = (variation: FlagVariation) =>
+    variation.name.trim() ||
+    (variation.value.length > 120
+      ? `${variation.value.slice(0, 117)}…`
+      : variation.value)
+  const added = current
+    .filter((variation) => !previousById.has(variation.id))
+    .map(summary)
+  const removed = previous
+    .filter((variation) => !currentById.has(variation.id))
+    .map(summary)
+  if (added.length || removed.length) {
+    changes.push({
+      kind: "variations",
+      label: "variations",
+      valueGroups: [
+        ...(added.length ? [{ action: "added" as const, values: added }] : []),
+        ...(removed.length
+          ? [{ action: "removed" as const, values: removed }]
+          : []),
+      ],
+    })
+  }
+
+  for (const variation of current) {
+    const old = previousById.get(variation.id)
+    if (!old) continue
+    if (old.name !== variation.name.trim() || old.value !== variation.value) {
+      changes.push({
+        kind: "variation",
+        label: variation.name.trim() || old.name,
+        literalLabel: true,
+        action: "updated",
+        previous: readableVariation(old),
+        current: readableVariation(variation),
+      })
+    }
+  }
+  const orderChange = variationOrderChange(previous, current)
+  if (orderChange) changes.push(orderChange)
+  return changes
+}
+
+export function variationOrderChange(
+  previous: FlagVariation[],
+  current: FlagVariation[]
+): VariationReviewChange | undefined {
+  const previousIds = new Set(previous.map((item) => item.id))
+  const currentIds = new Set(current.map((item) => item.id))
+  const orderWithoutReordering = [
+    ...previous.filter((item) => currentIds.has(item.id)),
+    ...current.filter((item) => !previousIds.has(item.id)),
+  ]
+  if (
+    orderWithoutReordering.some((item, index) => current[index]?.id !== item.id)
+  ) {
+    return {
+      kind: "variation",
+      label: "order",
+      action: "updated",
+      previous: previous.map((item) => item.name).join(" → "),
+      current: current.map((item) => item.name.trim()).join(" → "),
+    }
+  }
+}

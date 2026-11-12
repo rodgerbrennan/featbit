@@ -1,0 +1,21 @@
+export type ChangeReviewAction = "added" | "removed" | "updated"
+
+export type ChangeReviewValueGroup = {
+  action: Extract<ChangeReviewAction, "added" | "removed">
+  values: string[]
+}
+
+export type ChangeReviewItem = {
+  kind: string
+  label: string
+  action?: ChangeReviewAction
+  affectedCount?: number
+  previous?: string
+  current?: string
+  values?: string[]
+  valueGroups?: ChangeReviewValueGroup[]
+  literalLabel?: boolean
+  valueFormat?: "code"
+}
+
+export type ChangeLedgerLayout = "settings" | "targeting" | "history"

@@ -1,117 +1,40 @@
-using Domain.ExperimentMetrics;
-
 namespace Domain.Experiments;
 
 public class Experiment : AuditedEntity
 {
-    public Guid EnvId { get; set; }
-    public Guid MetricId { get; set; }
-    public Guid FeatureFlagId { get; set; }
-    public bool IsArchived { get; set; }
-    public string Status { get; set; } // possible values: NotStarted, NotRecording, Recording
-    public string BaselineVariationId { get; set; }
-    public List<ExperimentIteration> Iterations { get; set; }
-    public double? Alpha { get; set; }
-}
+    public string Name { get; set; }
 
-public class ExperimentIteration
-{
-    public string Id { get; set; }
-    public DateTime StartTime { get; set; }
-    public DateTime? EndTime { get; set; }
-    public DateTime? UpdatedAt { get; set; }
-    public bool IsArchived { get; set; }
-    public int EventType { get; set; }
-    public string EventName { get; set; }
-    public CustomEventTrackOption CustomEventTrackOption { get; set; }
-    public string CustomEventUnit { get; set; }
-    public CustomEventSuccessCriteria CustomEventSuccessCriteria { get; set; }
-    public List<IterationResult> Results { get; set; }
-    public bool IsFinish { get; set; }
+    public string Description { get; set; }
 
-    public bool IsLocked()
-    {
-        if (!IsFinish)
-        {
-            return false;
-        }
+    public string Stage { get; set; } = "hypothesis";
 
-        if (!EndTime.HasValue)
-        {
-            return false;
-        }
+    public Guid? FlagId { get; set; }
 
-        var elapsedTimeSinceEnd = DateTime.UtcNow - EndTime.Value;
-        return elapsedTimeSinceEnd >= TimeSpan.FromDays(3);
-    }
-}
+    public Guid? EnvId { get; set; }
 
-public class IterationResult
-{
-    public string ChangeToBaseline { get; set; }
-    public List<string> ConfidenceInterval { get; set; }
-    public long? Conversion { get; set; }
-    public string ConversionRate { get; set; }
-    public long? TotalEvents { get; set; }
-    public string Average { get; set; }
-    public bool IsBaseline { get; set; }
-    public bool IsInvalid { get; set; }
-    public bool IsWinner { get; set; }
-    public string PValue { get; set; }
-    public long? UniqueUsers { get; set; }
-    public string VariationId { get; set; }
-    public string EffectSize { get; set; }
-    public string Reason { get; set; }
-}
+    public string Hypothesis { get; set; }
 
-public class ExptIterationParam
-{
-    public Guid ExptId { get; set; }
+    public string Change { get; set; }
 
-    public string IterationId { get; set; }
+    public string Constraints { get; set; }
 
-    public Guid EnvId { get; set; }
+    public string Goal { get; set; }
 
-    public string FlagExptId { get; set; }
+    public List<GuardrailMetricConfig> GuardrailMetrics { get; set; } = [];
 
-    public string BaselineVariationId { get; set; }
+    public string Intent { get; set; }
 
-    public IEnumerable<string> VariationIds { get; set; }
+    public string LastAction { get; set; }
 
-    public string EventName { get; set; }
+    public string LastLearning { get; set; }
 
-    public int EventType { get; set; }
+    public PrimaryMetricConfig PrimaryMetric { get; set; }
 
-    public int CustomEventTrackOption { get; set; }
+    public string ConflictAnalysis { get; set; }
 
-    public int CustomEventSuccessCriteria { get; set; }
+    // Null marks legacy data whose run history has not been used to seed the counter yet.
+    // Only the database allocator updates this value; deleting a run never resets it.
+    public int LastRunNumber { get; set; } = 0;
 
-    public string CustomEventUnit { get; set; }
-
-    public long StartExptTime { get; set; } // format "1667489884000000"
-
-    public long? EndExptTime { get; set; } // format "1667489884000000"
-    public double? Alpha { get; set; }
-}
-
-public class OlapExptIterationResponse
-{
-    public int Code { get; set; }
-    public ExptIterationResult Data { get; set; }
-    public string Error { get; set; }
-}
-
-public class ExptIterationResult
-{
-    public string IterationId { get; set; }
-    public string ExptId { get; set; }
-    public CustomEventSuccessCriteria CustomEventSuccessCriteria { get; set; }
-    public CustomEventTrackOption CustomEventTrackOption { get; set; }
-    public string CustomEventUnit { get; set; }
-    public DateTime? EndTime { get; set; }
-    public int EventType { get; set; }
-    public bool IsFinish { get; set; }
-    public List<IterationResult> Results { get; set; }
-    public DateTime StartTime { get; set; }
-    public double? Alpha { get; set; }
+    public ICollection<ExperimentRun> ExperimentRuns { get; set; } = [];
 }

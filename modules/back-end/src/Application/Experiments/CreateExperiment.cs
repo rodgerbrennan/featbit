@@ -1,50 +1,49 @@
-﻿using Domain.Experiments;
+using Application.Bases;
+using Domain.Experiments;
 
 namespace Application.Experiments;
 
-public class CreateExperiment: IRequest<Experiment>
+public class CreateExperiment : IRequest<ExperimentVm>
 {
     public Guid EnvId { get; set; }
-    public Guid FeatureFlagId { get; set; }
-    public Guid MetricId { get; set; }
-    public string BaseLineVariationId { get; set; }
-    public double? Alpha { get; set; }
 
-    public Experiment AsExperiment()
+    public string Name { get; set; }
+
+    public string Description { get; set; }
+
+    public Guid? FlagId { get; set; }
+}
+
+public class CreateExperimentValidator : AbstractValidator<CreateExperiment>
+{
+    public CreateExperimentValidator()
     {
-        return new Experiment
-        {
-            EnvId = EnvId,
-            MetricId = MetricId,
-            FeatureFlagId = FeatureFlagId,
-            BaselineVariationId = BaseLineVariationId,
-            Status = ExperimentStatus.NotStarted,
-            Iterations = new List<ExperimentIteration>(),
-            Alpha = Alpha ?? 0.05
-        };
+        RuleFor(x => x.Name)
+            .Must(name => !string.IsNullOrWhiteSpace(name)).WithErrorCode(ErrorCodes.Required("name"));
     }
 }
 
-public class CreateExperimentHandler : IRequestHandler<CreateExperiment, Experiment>
+public class CreateExperimentHandler(
+    IExperimentService service)
+    : IRequestHandler<CreateExperiment, ExperimentVm>
 {
-    private readonly IExperimentService _service;
-
-    public CreateExperimentHandler(IExperimentService service)
+    public async Task<ExperimentVm> Handle(
+        CreateExperiment request,
+        CancellationToken cancellationToken)
     {
-        _service = service;
-    }
-
-    public async Task<Experiment> Handle(CreateExperiment request, CancellationToken cancellationToken)
-    {
-        var experiment = request.AsExperiment();
-        var existingExperiment = await _service.FindOneAsync(expt =>
-            expt.FeatureFlagId == experiment.FeatureFlagId && expt.MetricId == experiment.MetricId && !expt.IsArchived);
-
-        if (existingExperiment == null)
+        var now = DateTime.UtcNow;
+        var experiment = new Experiment
         {
-            await _service.AddOneAsync(experiment);
-        }
-        
-        return experiment;
+            Id = Guid.NewGuid(),
+            Name = request.Name.Trim(),
+            Description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim(),
+            FlagId = request.FlagId,
+            EnvId = request.EnvId,
+            Stage = "hypothesis",
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        return await service.CreateAsync(experiment);
     }
 }

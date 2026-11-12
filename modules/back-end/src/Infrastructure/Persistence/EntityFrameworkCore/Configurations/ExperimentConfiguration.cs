@@ -1,4 +1,4 @@
-﻿using Domain.Experiments;
+using Domain.Experiments;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -10,11 +10,16 @@ public class ExperimentConfiguration : IEntityTypeConfiguration<Experiment>
     {
         builder.ToTable("experiments");
 
-        builder.HasIndex(x => new { x.EnvId, x.FeatureFlagId });
+        builder.HasIndex(x => new { x.EnvId, x.UpdatedAt });
 
-        builder.Property(x => x.IsArchived).IsRequired();
-        builder.Property(x => x.Status).HasMaxLength(64).IsRequired();
+        builder.Property(x => x.Name).HasMaxLength(256).IsRequired();
+        builder.Property(x => x.Stage).HasMaxLength(64).IsRequired();
+        builder.Property(x => x.FlagId).HasColumnName("flag_id");
+        builder.Property(x => x.EnvId).HasColumnName("env_id");
+        builder.Property(x => x.LastRunNumber).HasColumnName("last_run_number").IsRequired().HasDefaultValue(0);
+        builder.Property(x => x.PrimaryMetric).HasColumnName("primary_metric").HasColumnType("jsonb");
+        builder.Property(x => x.GuardrailMetrics).HasColumnName("guardrail_metrics").HasColumnType("jsonb");
 
-        builder.Property(x => x.Iterations).HasColumnType("jsonb");
+        builder.Ignore(x => x.ExperimentRuns);
     }
 }

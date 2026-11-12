@@ -15,6 +15,11 @@ public static class FlagComparer
             return Array.Empty<FlagInstruction>();
         }
 
+        if (string.Equals(change.Previous, change.Current, StringComparison.Ordinal))
+        {
+            return Array.Empty<FlagInstruction>();
+        }
+
         var original = JsonSerializer.Deserialize<FeatureFlag>(change.Previous, ReusableJsonSerializerOptions.Web);
         var current = JsonSerializer.Deserialize<FeatureFlag>(change.Current, ReusableJsonSerializerOptions.Web);
 
@@ -36,6 +41,7 @@ public static class FlagComparer
         instructions.AddRange(CompareVariations(original.Variations, current.Variations));
 
         instructions.Add(CompareDisabledVariation(original.DisabledVariationId, current.DisabledVariationId));
+        instructions.Add(CompareInsightsEnabled(original.InsightsEnabled, current.InsightsEnabled));
 
         instructions.AddRange(CompareFallthrough(original.Fallthrough, current.Fallthrough));
         instructions.AddRange(CompareTargetUsers(current.Variations, original.TargetUsers, current.TargetUsers));
@@ -154,6 +160,17 @@ public static class FlagComparer
         }
 
         var instruction = new DisabledVariationInstruction(current);
+        return instruction;
+    }
+
+    public static FlagInstruction CompareInsightsEnabled(bool original, bool current)
+    {
+        if (original == current)
+        {
+            return NoopFlagInstruction.Instance;
+        }
+
+        var instruction = new InsightsEnabledInstruction(current);
         return instruction;
     }
 
@@ -289,7 +306,7 @@ public static class FlagComparer
 
         var addedRules = current.ExceptBy(original.Select(v => v.Id), v => v.Id).ToArray();
         var removedRules = original.ExceptBy(current.Select(v => v.Id), v => v.Id).ToArray();
-        var commonRules = original.IntersectBy(current.Select(v => v.Id), v => v.Id);
+        var commonRules = original.IntersectBy(current.Select(v => v.Id), v => v.Id).ToArray();
 
         foreach (var rule in addedRules)
         {
@@ -308,6 +325,16 @@ public static class FlagComparer
 
             var ruleInstructions = CompareRule(rule1, rule2);
             instructions.AddRange(ruleInstructions);
+        }
+
+        // if the order of rules is changed, we need to add a reorder instruction
+        var currentOrder = current.Select(rule => rule.Id).ToArray();
+        var incrementalOrder = commonRules.Concat(addedRules).Select(rule => rule.Id).ToArray();
+        if (!incrementalOrder.SequenceEqual(currentOrder))
+        {
+            instructions.Add(new ReorderRulesInstruction(
+                new RuleOrder(commonRules.Select(rule => rule.Id).ToArray(), currentOrder))
+            );
         }
 
         return instructions;

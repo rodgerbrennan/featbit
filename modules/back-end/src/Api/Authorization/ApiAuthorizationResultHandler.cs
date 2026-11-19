@@ -30,6 +30,15 @@ public class ApiAuthorizationResultHandler : IAuthorizationMiddlewareResultHandl
             return;
         }
 
+        if (authorizeResult.Forbidden && ResourceNotFoundMarker.IsMarked(context))
+        {
+            // vault integration: the target does not exist for this caller (changes 6 and 8)
+            response.StatusCode = StatusCodes.Status404NotFound;
+            await response.WriteAsJsonAsync(ApiResponse<object>.Error(ErrorCodes.ResourceNotFound));
+
+            return;
+        }
+
         if (authorizeResult.Forbidden)
         {
             response.StatusCode = StatusCodes.Status403Forbidden;

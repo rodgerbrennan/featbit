@@ -206,4 +206,23 @@ public class ResourceService(AppDbContext dbContext) : IResourceService
         resources.Insert(0, Resource.AllProjectEnv);
         return resources;
     }
+
+    public async Task<Guid?> GetEnvOrganizationIdAsync(Guid envId)
+    {
+        var query =
+            from env in QueryableOf<Environment>()
+            join project in QueryableOf<Project>() on env.ProjectId equals project.Id
+            where env.Id == envId
+            select (Guid?)project.OrganizationId;
+
+        return await query.FirstOrDefaultAsync();
+    }
+
+    public async Task<Guid?> GetProjectOrganizationIdAsync(Guid projectId)
+    {
+        return await QueryableOf<Project>()
+            .Where(x => x.Id == projectId)
+            .Select(x => (Guid?)x.OrganizationId)
+            .FirstOrDefaultAsync();
+    }
 }

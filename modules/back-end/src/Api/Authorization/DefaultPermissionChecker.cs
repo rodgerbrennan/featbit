@@ -7,6 +7,7 @@ namespace Api.Authorization;
 public class DefaultPermissionChecker(
     IResourceService resourceService,
     IRequestPermissions requestPermissions,
+    ITokenOrganizationScope organizationScope,
     ILogger<DefaultPermissionChecker> logger)
     : IPermissionChecker
 {
@@ -21,7 +22,7 @@ public class DefaultPermissionChecker(
             return false;
         }
 
-        var resourceRN = await GetRnAsync(permission, resourceType, httpContext.Request);
+        var resourceRN = await GetRnAsync(permission, resourceType, httpContext);
         if (string.IsNullOrWhiteSpace(resourceRN))
         {
             // failed to get resource RN, return false to be safe. This usually indicates bad requests, e.g. invalid or missing route parameters.
@@ -33,9 +34,9 @@ public class DefaultPermissionChecker(
         return PolicyHelper.IsAllowed(statements, resourceRN, permission);
     }
 
-    private async ValueTask<string?> GetRnAsync(string permission, string resourceType, HttpRequest request)
+    private async ValueTask<string?> GetRnAsync(string permission, string resourceType, HttpContext httpContext)
     {
-        var routeValues = request.RouteValues;
+        var routeValues = httpContext.Request.RouteValues;
 
         return resourceType switch
         {
@@ -74,6 +75,11 @@ public class DefaultPermissionChecker(
                 return string.Empty;
             }
 
+            if (await organizationScope.IsForeignProjectAsync(httpContext, projectId))
+            {
+                return null;
+            }
+
             var rn = await resourceService.GetProjectRnAsync(projectId);
             return permission == Permissions.CreateEnv
                 // return env level wildcard for `CreateEnv` permission
@@ -97,6 +103,11 @@ public class DefaultPermissionChecker(
                 return string.Empty;
             }
 
+            if (await organizationScope.IsForeignEnvAsync(httpContext, envId))
+            {
+                return null;
+            }
+
             var rn = await resourceService.GetEnvRnAsync(envId);
             return rn;
         }
@@ -108,6 +119,11 @@ public class DefaultPermissionChecker(
             {
                 // invalid or missing env id, return empty
                 return string.Empty;
+            }
+
+            if (await organizationScope.IsForeignEnvAsync(httpContext, envId))
+            {
+                return null;
             }
 
             if (!routeValues.TryGetValue("key", out var keyRouteValue))
@@ -130,6 +146,11 @@ public class DefaultPermissionChecker(
             {
                 // invalid or missing env id, return empty
                 return string.Empty;
+            }
+
+            if (await organizationScope.IsForeignEnvAsync(httpContext, envId))
+            {
+                return null;
             }
 
             if (!routeValues.TryGetValue("segmentId", out var segmentIdRouteValue))

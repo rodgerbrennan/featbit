@@ -70,6 +70,25 @@ public class ApiAuthorizationResultHandlerTests
     }
 
     [Fact]
+    public async Task HandleAsync_ForbiddenWithResourceNotFoundMarker_Writes404WithApiError()
+    {
+        var (ctx, body) = BuildContext();
+        ResourceNotFoundMarker.Mark(ctx);
+        var policy = new AuthorizationPolicyBuilder().RequireAssertion(_ => true).Build();
+        var nextCalled = false;
+        RequestDelegate next = _ => { nextCalled = true; return Task.CompletedTask; };
+
+        await new ApiAuthorizationResultHandler().HandleAsync(next, ctx, policy, PolicyAuthorizationResult.Forbid());
+
+        Assert.False(nextCalled);
+        Assert.Equal(StatusCodes.Status404NotFound, ctx.Response.StatusCode);
+        var apiResponse = await ReadBodyAsync(body);
+        Assert.NotNull(apiResponse);
+        Assert.False(apiResponse!.Success);
+        Assert.Contains(ErrorCodes.ResourceNotFound, apiResponse.Errors);
+    }
+
+    [Fact]
     public async Task HandleAsync_Success_CallsNextWithoutWritingError()
     {
         var (ctx, body) = BuildContext();

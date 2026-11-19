@@ -206,4 +206,26 @@ public class ResourceService(MongoDbClient mongoDb) : IResourceService
         resources.Insert(0, Resource.AllProjectEnv);
         return resources;
     }
+
+    public async Task<Guid?> GetEnvOrganizationIdAsync(Guid envId)
+    {
+        var query =
+            from env in QueryableOf<Environment>()
+            join project in QueryableOf<Project>() on env.ProjectId equals project.Id
+            where env.Id == envId
+            select new { project.OrganizationId };
+
+        var data = await query.FirstOrDefaultAsync();
+        return data?.OrganizationId;
+    }
+
+    public async Task<Guid?> GetProjectOrganizationIdAsync(Guid projectId)
+    {
+        var data = await QueryableOf<Project>()
+            .Where(x => x.Id == projectId)
+            .Select(x => new { x.OrganizationId })
+            .FirstOrDefaultAsync();
+
+        return data?.OrganizationId;
+    }
 }

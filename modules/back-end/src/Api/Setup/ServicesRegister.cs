@@ -124,6 +124,7 @@ public static class ServicesRegister
         builder.Services.AddTransient<ILicenseService, LicenseService>();
         builder.Services.AddScoped<IRequestPermissions, RequestPermissions>();
         builder.Services.AddScoped<IPermissionChecker, DefaultPermissionChecker>();
+        builder.Services.AddScoped<ITokenOrganizationScope, TokenOrganizationScope>();
         builder.Services.AddScoped<IAuthorizationHandler, PermissionRequirementHandler>();
         builder.Services.AddScoped<IAuthorizationHandler, LicenseRequirementHandler>();
         builder.Services.AddAuthorization(options =>

@@ -31,6 +31,7 @@ public class DefaultPermissionCheckerTests
         var sut = new DefaultPermissionChecker(
             resourceSvc.Object,
             requestPermissions.Object,
+            Mock.Of<ITokenOrganizationScope>(),
             NullLogger<DefaultPermissionChecker>.Instance);
         return (sut, resourceSvc, requestPermissions);
     }

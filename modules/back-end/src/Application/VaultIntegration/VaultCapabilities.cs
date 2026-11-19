@@ -17,6 +17,8 @@ public static class VaultCapabilities
     public static string[] Built(VaultIntegrationOptions options) =>
     [
         // change 5
-        AtomicSecrets
+        AtomicSecrets,
+        // change 8
+        OrgScopedEnv
     ];
 }

@@ -19,6 +19,8 @@ public static class VaultCapabilities
         // change 5
         AtomicSecrets,
         // change 8
-        OrgScopedEnv
+        OrgScopedEnv,
+        // change 1
+        OpenApiSecrets
     ];
 }

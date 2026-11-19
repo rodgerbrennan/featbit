@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.OpenApi;
 using Microsoft.OpenApi;
 using OpenApiConstants = Api.Authentication.OpenApiConstants;
 using OpenApiAttribute = Api.Authentication.OpenApiAttribute;
+using VaultOpenApiAttribute = Api.Authentication.VaultOpenApiAttribute;
 
 namespace Api.Setup.OpenApi;
 
@@ -22,7 +23,11 @@ public static class OpenApiSetup
     // ServiceProvider is needed. Api.UnitTests verifies this matches the [ApiVersion]s on controllers.
     public static readonly IReadOnlyList<ApiVersion> SupportedApiVersions = [new(1, 0), new(2, 0)];
 
-    public static IServiceCollection AddBackendOpenApi(this IServiceCollection services)
+    /// <param name="services">The service collection.</param>
+    /// <param name="vaultIntegrationEnabled">
+    /// Lists actions marked <see cref="VaultOpenApiAttribute"/> in the public document (vault integration change 1).
+    /// </param>
+    public static IServiceCollection AddBackendOpenApi(this IServiceCollection services, bool vaultIntegrationEnabled = false)
     {
         foreach (var version in SupportedApiVersions)
         {
@@ -46,7 +51,7 @@ public static class OpenApiSetup
 
         services.AddOpenApi(OpenApiConstants.ApiGroupName, options =>
         {
-            options.ShouldInclude = IsPublicOpenApiAction;
+            options.ShouldInclude = apiDesc => IsPublicOpenApiAction(apiDesc, vaultIntegrationEnabled);
             ConfigureCommon(options, CreateOpenApiInfo(
                 "FeatBit Open Api",
                 "1.0",
@@ -59,7 +64,7 @@ public static class OpenApiSetup
         return services;
     }
 
-    private static bool IsPublicOpenApiAction(ApiDescription apiDesc)
+    private static bool IsPublicOpenApiAction(ApiDescription apiDesc, bool vaultIntegrationEnabled)
     {
         if (apiDesc.ActionDescriptor is not ControllerActionDescriptor descriptor)
         {
@@ -67,7 +72,8 @@ public static class OpenApiSetup
         }
 
         return descriptor.MethodInfo.GetCustomAttribute<OpenApiAttribute>(true) != null ||
-               descriptor.ControllerTypeInfo.GetCustomAttribute<OpenApiAttribute>(true) != null;
+               descriptor.ControllerTypeInfo.GetCustomAttribute<OpenApiAttribute>(true) != null ||
+               (vaultIntegrationEnabled && descriptor.MethodInfo.GetCustomAttribute<VaultOpenApiAttribute>(true) != null);
     }
 
     private static void ConfigureCommon(OpenApiOptions options, OpenApiInfo info)

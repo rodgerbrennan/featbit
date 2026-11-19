@@ -1,3 +1,4 @@
+using Api.Authentication;
 using Application.Environments;
 using Domain.Environments;
 using Domain.Policies;
@@ -8,6 +9,7 @@ namespace Api.Controllers;
 public class EnvironmentSecretController : ApiControllerBase
 {
     [HttpPost]
+    [VaultOpenApi]
     [Authorize(Permissions.CreateEnvSecret)]
     public async Task<ApiResponse<Secret>> CreateAsync(Guid envId, AddSecret request)
     {
@@ -29,6 +31,7 @@ public class EnvironmentSecretController : ApiControllerBase
     }
 
     [HttpDelete("{id}")]
+    [VaultOpenApi]
     [Authorize(Permissions.DeleteEnvSecret)]
     public async Task<ApiResponse<bool>> DeleteAsync(Guid envId, string id)
     {

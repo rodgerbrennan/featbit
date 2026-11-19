@@ -2,6 +2,8 @@ using System.Reflection;
 using Api.Authentication;
 using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.Extensions.Options;
+using Application.VaultIntegration;
 
 namespace Api.Filters;
 
@@ -32,6 +34,13 @@ public class VerifyOpenApiApplicableAttribute : Attribute, IResourceFilter
         // Check if the controller has OpenApi attribute
         var controllerOpenApiAttribute = descriptor.ControllerTypeInfo.GetCustomAttribute<OpenApiAttribute>(true);
         if (controllerOpenApiAttribute != null)
+        {
+            return;
+        }
+
+        // Vault integration: actions the vault plugin calls are open to tokens only with the flag on
+        if (descriptor.MethodInfo.GetCustomAttribute<VaultOpenApiAttribute>(true) != null &&
+            context.HttpContext.RequestServices.GetRequiredService<IOptions<VaultIntegrationOptions>>().Value.Enabled)
         {
             return;
         }

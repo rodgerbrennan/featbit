@@ -107,6 +107,12 @@ public interface ICacheService
 
     Task DeleteSecretAsync(Secret secret);
 
+    /// <summary>
+    /// The values of every secret this cache holds for the environment. Used to find cache entries
+    /// that the environment row no longer holds. Caches that cannot enumerate secrets return none.
+    /// </summary>
+    Task<ICollection<string>> GetSecretValuesAsync(Guid envId) => Task.FromResult<ICollection<string>>([]);
+
     Task<string> GetOrSetLicenseAsync(Guid workspaceId, Func<Task<string>> licenseGetter);
 
     Task UpsertConnectionMadeAsync(ConnectionMessage connectionInfo);

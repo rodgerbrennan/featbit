@@ -26,4 +26,11 @@ public interface IEnvironmentService : IService<Environment>
     Task<bool> HasKeyBeenUsedAsync(Guid projectId, string key);
 
     Task<string> GetProjectEnvAsync(Guid envId);
+
+    Task AddSecretAsync(Guid envId, Secret secret);
+
+    /// <returns>The removed secret, or <c>null</c> when the environment holds no secret with that ID.</returns>
+    Task<Secret> RemoveSecretAsync(Guid envId, string secretId);
+
+    Task UpdateSecretNameAsync(Guid envId, string secretId, string name);
 }

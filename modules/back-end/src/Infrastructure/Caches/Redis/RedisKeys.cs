@@ -1,3 +1,4 @@
+using Domain.Utils;
 using StackExchange.Redis;
 
 namespace Infrastructure.Caches.Redis;
@@ -26,6 +27,11 @@ public static class RedisKeys
     public static RedisKey SegmentIndex(Guid envId) => new($"{SegmentIndexPrefix}{envId}");
 
     public static RedisKey Secret(string secretString) => new($"{SecretPrefix}{secretString}");
+
+    // A secret value ends with the encoded ID of its environment (see Domain.Environments.Secret.ValueOf).
+    public static string SecretPatternOfEnv(Guid envId) => $"{SecretPrefix}*{GuidHelper.Encode(envId)}";
+
+    public static string SecretValueOf(RedisKey key) => key.ToString()[SecretPrefix.Length..];
 
     public static RedisKey Connection(string connectionId) => new($"{ConnectionPrefix}{connectionId}");
 

@@ -354,6 +354,28 @@ public class RedisCacheService(IRedisClient redis) : ICacheService
         await Redis.KeyDeleteAsync(key);
     }
 
+    public async Task<ICollection<string>> GetSecretValuesAsync(Guid envId)
+    {
+        var pattern = RedisKeys.SecretPatternOfEnv(envId);
+        var values = new HashSet<string>();
+
+        foreach (var endPoint in redis.Connection.GetEndPoints())
+        {
+            var server = redis.Connection.GetServer(endPoint);
+            if (server.IsReplica)
+            {
+                continue;
+            }
+
+            await foreach (var key in server.KeysAsync(pattern: pattern, pageSize: 250))
+            {
+                values.Add(RedisKeys.SecretValueOf(key));
+            }
+        }
+
+        return values;
+    }
+
     public async Task<string> GetOrSetLicenseAsync(Guid workspaceId, Func<Task<string>> licenseGetter)
     {
         var key = RedisKeys.License(workspaceId);

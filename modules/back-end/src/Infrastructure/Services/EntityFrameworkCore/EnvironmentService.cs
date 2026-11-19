@@ -1,7 +1,11 @@
+using System.Text.Json;
+using Application.Bases.Exceptions;
+using Dapper;
 using Domain.EndUsers;
 using Domain.Environments;
 using Domain.Organizations;
 using Domain.Projects;
+using Domain.Utils;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Environment = Domain.Environments.Environment;
@@ -238,5 +242,103 @@ public class EnvironmentService(AppDbContext dbContext, ILogger<EnvironmentServi
         return result == null
             ? string.Empty
             : $"{result.project}/{result.env}";
+    }
+
+
+    /// <summary>
+    /// Writes every column except <c>secrets</c>. Secrets change only through the targeted
+    /// <see cref="AddSecretAsync"/>, <see cref="RemoveSecretAsync"/> and <see cref="UpdateSecretNameAsync"/>,
+    /// so a stale copy of the environment can never overwrite a concurrent secret change.
+    /// </summary>
+    public override async Task UpdateAsync(Environment env)
+    {
+        Set.Update(env);
+        DbContext.Entry(env).Property(x => x.Secrets).IsModified = false;
+
+        await SaveChangesAsync();
+    }
+
+    public async Task AddSecretAsync(Guid envId, Secret secret)
+    {
+        const string sql = """
+            UPDATE environments
+            SET secrets = COALESCE(secrets, '[]'::jsonb) || jsonb_build_array(@secret::jsonb)
+            WHERE id = @envId
+            """;
+
+        var secretJson = JsonSerializer.Serialize(secret, ReusableJsonSerializerOptions.Web);
+        var affected = await DbConnection.ExecuteAsync(sql, new { envId, secret = secretJson });
+        if (affected == 0)
+        {
+            throw new EntityNotFoundException(nameof(Environment), envId.ToString());
+        }
+    }
+
+    public async Task<Secret?> RemoveSecretAsync(Guid envId, string secretId)
+    {
+        // Lock the row first so the array is rebuilt from its latest committed version.
+        const string sql = """
+            WITH target AS (
+                SELECT id, secrets FROM environments WHERE id = @envId FOR UPDATE
+            ), removed AS (
+                SELECT t.id, s.elem
+                FROM target t, jsonb_array_elements(t.secrets) AS s(elem)
+                WHERE s.elem ->> 'id' = @secretId
+                LIMIT 1
+            )
+            UPDATE environments e
+            SET secrets = COALESCE((
+                SELECT jsonb_agg(x.elem ORDER BY x.ord)
+                FROM target t, jsonb_array_elements(t.secrets) WITH ORDINALITY AS x(elem, ord)
+                WHERE x.elem ->> 'id' IS DISTINCT FROM @secretId
+            ), '[]'::jsonb)
+            FROM removed r
+            WHERE e.id = r.id
+            RETURNING r.elem::text
+            """;
+
+        var removed = await DbConnection.QuerySingleOrDefaultAsync<string>(sql, new { envId, secretId });
+        if (removed != null)
+        {
+            return JsonSerializer.Deserialize<Secret>(removed, ReusableJsonSerializerOptions.Web);
+        }
+
+        await EnsureExistsAsync(envId);
+        return null;
+    }
+
+    public async Task UpdateSecretNameAsync(Guid envId, string secretId, string name)
+    {
+        const string sql = """
+            WITH target AS (
+                SELECT id, secrets FROM environments WHERE id = @envId FOR UPDATE
+            )
+            UPDATE environments e
+            SET secrets = (
+                SELECT jsonb_agg(
+                    CASE WHEN x.elem ->> 'id' = @secretId
+                        THEN jsonb_set(x.elem, '{name}', to_jsonb(@name::text))
+                        ELSE x.elem
+                    END ORDER BY x.ord)
+                FROM jsonb_array_elements(t.secrets) WITH ORDINALITY AS x(elem, ord)
+            )
+            FROM target t
+            WHERE e.id = t.id
+              AND t.secrets @> jsonb_build_array(jsonb_build_object('id', @secretId::text))
+            """;
+
+        var affected = await DbConnection.ExecuteAsync(sql, new { envId, secretId, name });
+        if (affected == 0)
+        {
+            await EnsureExistsAsync(envId);
+        }
+    }
+
+    private async Task EnsureExistsAsync(Guid envId)
+    {
+        if (!await AnyAsync(x => x.Id == envId))
+        {
+            throw new EntityNotFoundException(nameof(Environment), envId.ToString());
+        }
     }
 }

@@ -31,9 +31,7 @@ public class UpdateSecretHandler : IRequestHandler<UpdateSecret, bool>
 
     public async Task<bool> Handle(UpdateSecret request, CancellationToken cancellationToken)
     {
-        var environment = await _service.GetAsync(request.EnvId);
-        environment.UpdateSecret(request.SecretId, request.Name);
-        await _service.UpdateAsync(environment);
+        await _service.UpdateSecretNameAsync(request.EnvId, request.SecretId, request.Name);
 
         return true;
     }

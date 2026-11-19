@@ -149,6 +149,27 @@ public class VaultIntegrationControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task FlagOn_ImageVersionVariable_IsReportedAsFeatbitVersion()
+    {
+        // official images set ENV VERSION=<release> (deploy/Dockerfile)
+        var body = await (await TokenClient(Enabled(("VERSION", "6.1.0"))).GetAsync(Uri))
+            .Content.ReadFromJsonAsync<ApiResponse<VaultCapabilitiesVm>>(JsonOptions);
+
+        Assert.Equal("6.1.0", body!.Data!.FeatbitVersion);
+    }
+
+    [Fact]
+    public async Task FlagOn_ConfiguredVersion_OverridesImageVersionVariable()
+    {
+        var factory = Enabled(("VERSION", "6.1.0"), ("VaultIntegration:FeatBitVersion", "6.1.0-fork.2"));
+
+        var body = await (await TokenClient(factory).GetAsync(Uri))
+            .Content.ReadFromJsonAsync<ApiResponse<VaultCapabilitiesVm>>(JsonOptions);
+
+        Assert.Equal("6.1.0-fork.2", body!.Data!.FeatbitVersion);
+    }
+
+    [Fact]
     public async Task FlagOn_EvaluationServerDeclared_DoesNotReportCloseOnRevokeBeforeItIsBuilt()
     {
         var factory = Enabled(("VaultIntegration:EvaluationServerEnabled", "true"));

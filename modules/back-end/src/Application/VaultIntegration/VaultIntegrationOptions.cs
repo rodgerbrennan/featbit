@@ -20,7 +20,10 @@ public class VaultIntegrationOptions
     /// </summary>
     public bool EvaluationServerEnabled { get; set; }
 
-    /// <summary>Overrides the reported FeatBit version. Defaults to the API assembly's version.</summary>
+    /// <summary>
+    /// Overrides the reported FeatBit version. Defaults to the image's <c>VERSION</c> variable, then the API
+    /// assembly's version.
+    /// </summary>
     public string FeatBitVersion { get; set; }
 
     /// <summary>Overrides the reported fork revision. Defaults to the source revision the API was built from.</summary>

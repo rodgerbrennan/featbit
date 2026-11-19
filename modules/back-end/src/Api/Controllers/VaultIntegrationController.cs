@@ -11,7 +11,8 @@ namespace Api.Controllers;
 /// does not exist, exactly as on upstream FeatBit.
 /// </summary>
 [Route("api/v{version:apiVersion}/vault-integration")]
-public class VaultIntegrationController(IOptions<VaultIntegrationOptions> options) : ApiControllerBase
+public class VaultIntegrationController(IOptions<VaultIntegrationOptions> options, IConfiguration configuration)
+    : ApiControllerBase
 {
     private static readonly string InformationalVersion =
         typeof(VaultIntegrationController).Assembly
@@ -33,7 +34,8 @@ public class VaultIntegrationController(IOptions<VaultIntegrationOptions> option
         var parts = InformationalVersion.Split('+', 2);
         var vm = new VaultCapabilitiesVm
         {
-            FeatbitVersion = Choose(settings.FeatBitVersion, parts[0]),
+            // official images set the release in the VERSION environment variable (deploy/Dockerfile)
+            FeatbitVersion = Choose(settings.FeatBitVersion, Choose(configuration["VERSION"], parts[0])),
             ForkRevision = Choose(settings.ForkRevision, parts.Length > 1 ? parts[1] : null),
             Capabilities = VaultCapabilities.Built(settings)
         };

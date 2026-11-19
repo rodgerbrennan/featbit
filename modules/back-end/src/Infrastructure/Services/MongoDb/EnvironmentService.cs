@@ -1,8 +1,11 @@
+using Application.Bases.Exceptions;
 using Domain.EndUsers;
 using Domain.Environments;
 using Domain.Organizations;
 using Domain.Projects;
 using Microsoft.Extensions.Logging;
+using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
 using MongoDB.Driver;
 using MongoDB.Driver.Linq;
 using Environment = Domain.Environments.Environment;
@@ -243,5 +246,81 @@ public class EnvironmentService(MongoDbClient mongoDb, ILogger<EnvironmentServic
         return result == null
             ? string.Empty
             : $"{result.project}/{result.env}";
+    }
+
+
+    private static readonly string SecretsElementName =
+        BsonClassMap.LookupClassMap(typeof(Environment)).GetMemberMap(nameof(Environment.Secrets)).ElementName;
+
+    /// <summary>
+    /// Writes every field except <c>secrets</c>. Secrets change only through the targeted
+    /// <see cref="AddSecretAsync"/>, <see cref="RemoveSecretAsync"/> and <see cref="UpdateSecretNameAsync"/>,
+    /// so a stale copy of the environment can never overwrite a concurrent secret change.
+    /// </summary>
+    public override async Task UpdateAsync(Environment replacement)
+    {
+        var fields = replacement.ToBsonDocument();
+        fields.Remove("_id");
+        fields.Remove(SecretsElementName);
+
+        await Collection.UpdateOneAsync(x => x.Id == replacement.Id, new BsonDocument("$set", fields));
+    }
+
+    public async Task AddSecretAsync(Guid envId, Secret secret)
+    {
+        // $push fails on a null field; start the list atomically in that case, as COALESCE does in Postgres
+        var startList = await Collection.UpdateOneAsync(
+            x => x.Id == envId && x.Secrets == null,
+            Builders<Environment>.Update.Set(x => x.Secrets, new List<Secret> { secret }));
+        if (startList.ModifiedCount == 1)
+        {
+            return;
+        }
+
+        var update = Builders<Environment>.Update.Push(x => x.Secrets, secret);
+
+        var result = await Collection.UpdateOneAsync(x => x.Id == envId, update);
+        if (result.MatchedCount == 0)
+        {
+            throw new EntityNotFoundException(nameof(Environment), envId.ToString());
+        }
+    }
+
+    public async Task<Secret?> RemoveSecretAsync(Guid envId, string secretId)
+    {
+        var filter = Builders<Environment>.Filter.Eq(x => x.Id, envId) &
+                     Builders<Environment>.Filter.ElemMatch(x => x.Secrets, s => s.Id == secretId);
+        var update = Builders<Environment>.Update.PullFilter(x => x.Secrets, s => s.Id == secretId);
+        var options = new FindOneAndUpdateOptions<Environment> { ReturnDocument = ReturnDocument.Before };
+
+        var before = await Collection.FindOneAndUpdateAsync(filter, update, options);
+        if (before != null)
+        {
+            return before.Secrets.First(s => s.Id == secretId);
+        }
+
+        await EnsureExistsAsync(envId);
+        return null;
+    }
+
+    public async Task UpdateSecretNameAsync(Guid envId, string secretId, string name)
+    {
+        var filter = Builders<Environment>.Filter.Eq(x => x.Id, envId) &
+                     Builders<Environment>.Filter.ElemMatch(x => x.Secrets, s => s.Id == secretId);
+        var update = Builders<Environment>.Update.Set(x => x.Secrets.FirstMatchingElement().Name, name);
+
+        var result = await Collection.UpdateOneAsync(filter, update);
+        if (result.MatchedCount == 0)
+        {
+            await EnsureExistsAsync(envId);
+        }
+    }
+
+    private async Task EnsureExistsAsync(Guid envId)
+    {
+        if (!await AnyAsync(x => x.Id == envId))
+        {
+            throw new EntityNotFoundException(nameof(Environment), envId.ToString());
+        }
     }
 }

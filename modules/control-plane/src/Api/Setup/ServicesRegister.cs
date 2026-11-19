@@ -1,3 +1,4 @@
+using Application.VaultIntegration;
 using System.Reflection;
 using Api.Application.ControlPlane;
 using Api.Authentication;
@@ -62,6 +63,9 @@ public static class ServicesRegister
         // ILeaderElection). Opt-in, default off — see AddLeaderElection below for the rationale.
         AddLeaderElection(builder.Services, builder.Configuration);
 
+        // vault-plugin-secrets-featbit integration flag, default off
+        AddVaultIntegration(builder.Services, builder.Configuration);
+
         // C3b-2 commit coordinator: gated-commit reconciliation of pending flag changes. No-ops
         // unless ControlPlane:ConsistencyMode == GatedCommit (checked inside the worker).
         builder.Services.AddHostedService<CommitCoordinatorWorker>();
@@ -109,6 +113,15 @@ public static class ServicesRegister
     /// singleton, exposed both as <see cref="ILeaderElection"/> and as a hosted service so all three
     /// resolve the SAME instance.
     /// </summary>
+    /// <summary>
+    /// Binds <see cref="VaultIntegrationOptions"/> (default off: upstream behavior). The vault-integration fork
+    /// changes that touch the Control Plane check it.
+    /// </summary>
+    internal static void AddVaultIntegration(IServiceCollection services, IConfiguration configuration)
+    {
+        services.Configure<VaultIntegrationOptions>(configuration.GetSection(VaultIntegrationOptions.SectionName));
+    }
+
     internal static void AddLeaderElection(IServiceCollection services, IConfiguration configuration)
     {
         var enabled = configuration.GetValue<bool>("ControlPlane:LeaderElection:Enabled");

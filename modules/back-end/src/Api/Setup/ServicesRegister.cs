@@ -25,7 +25,7 @@ public static class ServicesRegister
         // add services for controllers
         builder.Services.AddControllers().ConfigureApiBehaviorOptions(options =>
             options.InvalidModelStateResponseFactory = ModelValidationResponse.Create
-        );
+        ).AddVaultIntegration(builder.Configuration);
 
         // add mcp server & tools
         builder.Services

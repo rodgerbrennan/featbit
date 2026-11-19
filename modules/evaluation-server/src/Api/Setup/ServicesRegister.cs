@@ -1,3 +1,4 @@
+using Domain.VaultIntegration;
 using Api.Authorization;
 using Api.Authentication;
 using Api.ControlPlane;
@@ -63,6 +64,9 @@ public static class ServicesRegister
         services.AddAuthorizationBuilder()
             .SetFallbackPolicy(requireAuthPolicy)
             .AddSecretPolicies();
+
+        // vault-plugin-secrets-featbit integration flag, default off
+        services.Configure<VaultIntegrationOptions>(configuration.GetSection(VaultIntegrationOptions.SectionName));
 
         // domain services
         services.AddSingleton<EndUserDeduplicator>();

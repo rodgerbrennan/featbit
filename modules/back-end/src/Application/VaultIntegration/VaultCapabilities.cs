@@ -21,6 +21,8 @@ public static class VaultCapabilities
         // change 8
         OrgScopedEnv,
         // change 1
-        OpenApiSecrets
+        OpenApiSecrets,
+        // change 6
+        DeletedEnv404
     ];
 }

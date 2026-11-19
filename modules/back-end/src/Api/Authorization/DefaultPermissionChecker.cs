@@ -1,3 +1,6 @@
+using Api.Authentication;
+using Application.VaultIntegration;
+using Microsoft.Extensions.Options;
 using Application.Services;
 using Domain.Policies;
 using Domain.Resources;
@@ -8,6 +11,7 @@ public class DefaultPermissionChecker(
     IResourceService resourceService,
     IRequestPermissions requestPermissions,
     ITokenOrganizationScope organizationScope,
+    IOptions<VaultIntegrationOptions> vaultIntegration,
     ILogger<DefaultPermissionChecker> logger)
     : IPermissionChecker
 {
@@ -23,6 +27,11 @@ public class DefaultPermissionChecker(
         }
 
         var resourceRN = await GetRnAsync(permission, resourceType, httpContext);
+        if (resourceRN == null && resourceType == ResourceTypes.Env)
+        {
+            await MarkDeletedEnvAsync(httpContext, permission);
+        }
+
         if (string.IsNullOrWhiteSpace(resourceRN))
         {
             // failed to get resource RN, return false to be safe. This usually indicates bad requests, e.g. invalid or missing route parameters.
@@ -32,6 +41,42 @@ public class DefaultPermissionChecker(
         // check if the user has the required permission on the resource
         var statements = await requestPermissions.GetAsync(httpContext);
         return PolicyHelper.IsAllowed(statements, resourceRN, permission);
+    }
+
+    // vault integration change 6: the env-scoped permissions the vault plugin uses
+    private static readonly HashSet<string> DeletedEnvPermissions =
+    [
+        Permissions.CanAccessEnv,
+        Permissions.CreateEnvSecret,
+        Permissions.DeleteEnvSecret,
+        Permissions.ViewEnvSecret
+    ];
+
+    /// <summary>
+    /// Vault integration change 6: the env could not be resolved because it does not exist (deleted). For a token
+    /// caller with the flag on, mark the denial "not found" so it answers 404 instead of 403. Only when the
+    /// caller holds some env-scoped permission, so a caller with none learns nothing about which env IDs exist.
+    /// </summary>
+    private async Task MarkDeletedEnvAsync(HttpContext httpContext, string permission)
+    {
+        if (!vaultIntegration.Value.Enabled ||
+            httpContext.User.Identity?.AuthenticationType != Schemes.OpenApi ||
+            !DeletedEnvPermissions.Contains(permission))
+        {
+            return;
+        }
+
+        var statements = await requestPermissions.GetAsync(httpContext);
+        var holdsEnvScopedPermission = statements.Any(statement =>
+            statement.Effect == EffectType.Allow &&
+            (statement.ResourceType == ResourceTypes.All ||
+             (statement.ResourceType == ResourceTypes.Env &&
+              statement.Actions.Any(action => action == "*" || DeletedEnvPermissions.Contains(action)))));
+
+        if (holdsEnvScopedPermission)
+        {
+            ResourceNotFoundMarker.Mark(httpContext);
+        }
     }
 
     private async ValueTask<string?> GetRnAsync(string permission, string resourceType, HttpContext httpContext)

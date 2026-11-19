@@ -34,7 +34,8 @@ public class TokenOrganizationScope(IResourceService resourceService, IOptions<V
                 ? token.OrganizationId
                 : (Guid?)null;
 
-            // a target that does not exist is not foreign: callers keep their upstream answer for it
+            // a target that does not exist is not foreign; the permission checker decides how a missing
+            // environment answers (403, or 404 under change 6)
             var ownerId = await ownerOf();
             foreign = ownerId.HasValue && ownerId != tokenOrganizationId;
             _foreign[target] = foreign;

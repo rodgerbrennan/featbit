@@ -1,3 +1,5 @@
+using Application.VaultIntegration;
+using Microsoft.Extensions.Options;
 using Api.Authorization;
 using Application.Services;
 using Domain.Policies;
@@ -21,7 +23,8 @@ public class DefaultPermissionCheckerOrganizationScopeTests
     private readonly Mock<ITokenOrganizationScope> _scope = new();
 
     private DefaultPermissionChecker Sut() => new(
-        _resources.Object, _permissions.Object, _scope.Object, NullLogger<DefaultPermissionChecker>.Instance);
+        _resources.Object, _permissions.Object, _scope.Object, Options.Create(new VaultIntegrationOptions()),
+        NullLogger<DefaultPermissionChecker>.Instance);
 
     private void AllowEverythingOnSameKeys()
     {

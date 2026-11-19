@@ -1,3 +1,5 @@
+using Application.VaultIntegration;
+using Microsoft.Extensions.Options;
 using Api.Authorization;
 using Application.Services;
 using Domain.Policies;
@@ -32,6 +34,7 @@ public class DefaultPermissionCheckerTests
             resourceSvc.Object,
             requestPermissions.Object,
             Mock.Of<ITokenOrganizationScope>(),
+            Options.Create(new VaultIntegrationOptions()),
             NullLogger<DefaultPermissionChecker>.Instance);
         return (sut, resourceSvc, requestPermissions);
     }

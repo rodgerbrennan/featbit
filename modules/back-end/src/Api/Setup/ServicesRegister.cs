@@ -1,3 +1,4 @@
+using Application.VaultIntegration;
 using Api.Authentication;
 using Api.Authentication.OAuth;
 using Api.Authentication.OpenIdConnect;
@@ -62,7 +63,8 @@ public static class ServicesRegister
         }));
 
         // OpenApi: one document per API version, plus a filtered public "OpenApi" document.
-        builder.Services.AddBackendOpenApi();
+        builder.Services.AddBackendOpenApi(
+            builder.Configuration.GetValue<bool>($"{VaultIntegrationOptions.SectionName}:{nameof(VaultIntegrationOptions.Enabled)}"));
 
         // health check dependencies
         builder.Services.AddHealthChecks().AddReadinessChecks(builder.Configuration);

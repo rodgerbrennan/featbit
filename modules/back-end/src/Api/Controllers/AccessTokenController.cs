@@ -1,3 +1,4 @@
+using Api.Authentication;
 using Application.AccessTokens;
 using Application.Bases.Models;
 using Domain.AccessTokens;
@@ -9,6 +10,7 @@ namespace Api.Controllers;
 public class AccessTokenController : ApiControllerBase
 {
     [HttpGet]
+    [VaultOpenApi]
     [Authorize(Permissions.ListAccessTokens)]
     public async Task<ApiResponse<PagedResult<AccessTokenVm>>> GetListAsync([FromQuery] AccessTokenFilter filter)
     {
@@ -36,6 +38,7 @@ public class AccessTokenController : ApiControllerBase
     }
 
     [HttpPost]
+    [VaultOpenApi]
     public async Task<ApiResponse<AccessToken>> CreateAsync(CreateAccessToken request)
     {
         request.OrganizationId = OrgId;
@@ -60,6 +63,7 @@ public class AccessTokenController : ApiControllerBase
     }
 
     [HttpDelete("{id:guid}")]
+    [VaultOpenApi]
     public async Task<ApiResponse<bool>> DeleteAsync(Guid id)
     {
         var request = new DeleteAccessToken

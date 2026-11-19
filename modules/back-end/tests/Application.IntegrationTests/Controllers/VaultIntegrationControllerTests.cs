@@ -106,7 +106,7 @@ public class VaultIntegrationControllerTests : IDisposable
         var body = await response.Content.ReadFromJsonAsync<ApiResponse<VaultCapabilitiesVm>>(JsonOptions);
         Assert.NotNull(body);
         Assert.True(body!.Success);
-        Assert.Equal(["atomic-secrets", "org-scoped-env", "openapi-secrets"], body.Data!.Capabilities);
+        Assert.Equal(["atomic-secrets", "org-scoped-env", "openapi-secrets", "deleted-env-404"], body.Data!.Capabilities);
         Assert.False(string.IsNullOrWhiteSpace(body.Data.FeatbitVersion));
         Assert.False(string.IsNullOrWhiteSpace(body.Data.ForkRevision));
     }
